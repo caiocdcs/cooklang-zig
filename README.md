@@ -324,28 +324,6 @@ Pour in eggs and cook for ~{2%minutes}, stirring constantly.
 Season with @salt and @pepper{} to taste.
 ```
 
-## Contributing
-
-We welcome contributions to the CookLang Zig Parser! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
-
-### Quick Start for Contributors
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Make your changes and add tests
-4. Ensure all tests pass: `just test && just test-parser`
-5. Commit your changes: `git commit -m 'Add amazing feature'`
-6. Push to the branch: `git push origin feature/amazing-feature`
-7. Open a Pull Request
-
-### Development Requirements
-
-- All changes must pass the canonical test suite: `just test-parser`
-- All unit tests must pass: `just test`
-- No memory leaks (verified with testing allocator)
-- Follow Zig formatting standards: `just fmt`
-- Add appropriate tests for new features
-
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
