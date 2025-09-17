@@ -1,0 +1,16 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+
+# Executables
+cooklang_zig
+cooklang_zig.exe
+
+# Editor files
+.vscode/
+*.swp
+*~
+
+# System files
+.DS_Store
+Thumbs.db
