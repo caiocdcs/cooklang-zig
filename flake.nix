@@ -10,7 +10,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        zig = pkgs.zig_0_13 or pkgs.zig;  # Use zig 0.13+ or fallback
+        zig = pkgs.zig_0_16 or pkgs.zig;  # Use zig 0.16+ or fallback
       in
       {
         packages = {

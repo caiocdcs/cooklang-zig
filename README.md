@@ -1,6 +1,6 @@
 # CookLang Parser for Zig
 
-A complete implementation of the [CookLang specification](https://cooklang.org/docs/spec/) written in Zig 0.15.
+A complete implementation of the [CookLang specification](https://cooklang.org/docs/spec/) written in Zig 0.16.
 
 ## Features
 
@@ -269,7 +269,7 @@ Download from the [Releases](https://github.com/caiocdcs/cooklang-zig/releases) 
 ### Building from Source
 
 #### Requirements
-- Zig 0.15 or later
+- Zig 0.16 or later
 - `just` command runner ([installation guide](https://github.com/casey/just#installation))
 
 #### Build Instructions
