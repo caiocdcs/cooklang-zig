@@ -41,7 +41,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-
     // Testing module for canonical tests
     const testing_mod = b.addModule("testing", .{
         .root_source_file = b.path("src/testing/canonical.zig"),
@@ -55,7 +54,7 @@ pub fn build(b: *std.Build) void {
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
     // to the module defined above, it's sometimes preferable to split business
-    // business logic and the CLI into two separate modules.
+    // logic and the CLI into two separate modules.
     //
     // If your goal is to create a Zig library for others to use, consider if
     // it might benefit from also exposing a CLI tool. A parser library for a

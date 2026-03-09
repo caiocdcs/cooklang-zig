@@ -102,7 +102,6 @@ pub const CanonicalTests = struct {
     }
 };
 
-
 /// Test result information
 pub const TestResult = struct {
     name: []const u8,
@@ -154,13 +153,17 @@ pub const TestRunResults = struct {
     }
 };
 
+/// Path to canonical test file
+const CANONICAL_TESTS_PATH = "src/canonical.json";
+
 /// Load and run all canonical tests
 pub fn runAllCanonicalTests(allocator: Allocator) !TestRunResults {
-    print("Loading canonical tests from src/canonical.json...\n", .{});
+    print("Loading canonical tests from {s}...\n", .{CANONICAL_TESTS_PATH});
 
     // Read the JSON file
-    const file = std.fs.cwd().openFile("src/canonical.json", .{}) catch |err| {
-        print("Failed to open src/canonical.json: {}\n", .{err});
+    const file = std.fs.cwd().openFile(CANONICAL_TESTS_PATH, .{}) catch |err| {
+        print("Failed to open {s}: {}\n", .{ CANONICAL_TESTS_PATH, err });
+        print("Make sure to run from the project root directory.\n", .{});
         return err;
     };
     defer file.close();
@@ -187,7 +190,7 @@ pub fn runAllCanonicalTests(allocator: Allocator) !TestRunResults {
     while (test_iterator.next()) |entry| {
         const test_name = entry.key_ptr.*;
         const test_case = entry.value_ptr;
-        
+
         const result = runSingleCanonicalTest(test_name, test_case, allocator) catch |err| blk: {
             const error_msg = try std.fmt.allocPrint(allocator, "Test execution failed: {}", .{err});
             break :blk TestResult{
@@ -197,9 +200,9 @@ pub fn runAllCanonicalTests(allocator: Allocator) !TestRunResults {
                 .allocator = allocator,
             };
         };
-        
+
         try test_results.addResult(result);
-        
+
         // Print immediate result
         if (result.passed) {
             print("{s}PASS{s} {s}\n", .{ Color.GREEN, Color.RESET, result.name });
@@ -226,8 +229,8 @@ pub fn runTestByName(test_name: []const u8, allocator: Allocator) !TestResult {
     print("Running test: {s}\n", .{test_name});
 
     // Read the JSON file
-    const file = std.fs.cwd().openFile("src/canonical.json", .{}) catch |err| {
-        const error_msg = try std.fmt.allocPrint(allocator, "Failed to open src/canonical.json: {}", .{err});
+    const file = std.fs.cwd().openFile(CANONICAL_TESTS_PATH, .{}) catch |err| {
+        const error_msg = try std.fmt.allocPrint(allocator, "Failed to open {s}: {}", .{ CANONICAL_TESTS_PATH, err });
         return TestResult{
             .name = try allocator.dupe(u8, test_name),
             .passed = false,
@@ -270,8 +273,8 @@ pub fn runTestByName(test_name: []const u8, allocator: Allocator) !TestResult {
 /// List all available tests
 pub fn listTests(allocator: Allocator) !void {
     // Read the JSON file
-    const file = std.fs.cwd().openFile("src/canonical.json", .{}) catch |err| {
-        print("Failed to open src/canonical.json: {}\n", .{err});
+    const file = std.fs.cwd().openFile(CANONICAL_TESTS_PATH, .{}) catch |err| {
+        print("Failed to open {s}: {}\n", .{ CANONICAL_TESTS_PATH, err });
         return;
     };
     defer file.close();
@@ -289,7 +292,7 @@ pub fn listTests(allocator: Allocator) !void {
     defer canonical_tests.deinit(allocator);
 
     print("Available canonical tests ({} total):\n", .{canonical_tests.tests.count()});
-    
+
     var test_iterator = canonical_tests.tests.iterator();
     while (test_iterator.next()) |entry| {
         const test_name = entry.key_ptr.*;
@@ -332,32 +335,23 @@ fn runSingleCanonicalTest(test_name: []const u8, test_case: *const CanonicalTest
 fn compareResults(recipe: *Recipe, test_case: *const CanonicalTest, allocator: Allocator) ?[]const u8 {
     // Compare number of steps
     if (recipe.steps.items.len != test_case.expected_steps.items.len) {
-        return std.fmt.allocPrint(allocator, 
-            "Step count mismatch: expected {}, got {}", 
-            .{ test_case.expected_steps.items.len, recipe.steps.items.len }
-        ) catch "step count mismatch";
+        return std.fmt.allocPrint(allocator, "Step count mismatch: expected {}, got {}", .{ test_case.expected_steps.items.len, recipe.steps.items.len }) catch "step count mismatch";
     }
 
     // Compare each step
     for (recipe.steps.items, 0..) |*actual_step, step_idx| {
         const expected_step = &test_case.expected_steps.items[step_idx];
-        
+
         if (actual_step.items.len != expected_step.items.len) {
-            return std.fmt.allocPrint(allocator,
-                "Step {} component count mismatch: expected {}, got {}",
-                .{ step_idx, expected_step.items.len, actual_step.items.len }
-            ) catch "component count mismatch";
+            return std.fmt.allocPrint(allocator, "Step {} component count mismatch: expected {}, got {}", .{ step_idx, expected_step.items.len, actual_step.items.len }) catch "component count mismatch";
         }
 
         // Compare each component in the step
         for (actual_step.items, 0..) |*actual_component, comp_idx| {
             const expected_component = &expected_step.items[comp_idx];
-            
+
             if (compareComponent(actual_component, expected_component, allocator)) |component_error| {
-                return std.fmt.allocPrint(allocator,
-                    "Step {} component {} mismatch: {s}",
-                    .{ step_idx, comp_idx, component_error }
-                ) catch "component mismatch";
+                return std.fmt.allocPrint(allocator, "Step {} component {} mismatch: {s}", .{ step_idx, comp_idx, component_error }) catch "component mismatch";
             }
         }
     }
@@ -370,7 +364,7 @@ fn compareResults(recipe: *Recipe, test_case: *const CanonicalTest, allocator: A
     return null; // No errors, test passed
 }
 
-/// Convert TestComponent ComponentType to parser ComponentType  
+/// Convert TestComponent ComponentType to parser ComponentType
 fn convertComponentType(test_type: ComponentType) ComponentType {
     return switch (test_type) {
         .text => .text,

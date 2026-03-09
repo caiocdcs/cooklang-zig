@@ -9,6 +9,16 @@ const testing = std.testing;
 
 // Import component types
 const components = @import("components.zig");
+const quantity = @import("quantity.zig");
+const helpers = @import("helpers.zig");
+const yaml = @import("yaml.zig");
+const errors = @import("errors.zig");
+
+// Re-export error types
+pub const ParseError = errors.ParseError;
+pub const ParseErrorWithContext = errors.ParseErrorWithContext;
+pub const DetailedParseError = errors.DetailedParseError;
+pub const ComponentKind = errors.ComponentKind;
 
 // Re-export component types for public API
 pub const ComponentType = components.ComponentType;
@@ -17,105 +27,6 @@ pub const Component = components.Component;
 pub const Step = components.Step;
 pub const Metadata = components.Metadata;
 pub const Recipe = components.Recipe;
-
-/// Parse error types
-pub const ParseError = error{
-    InvalidYamlFrontMatter,
-    InvalidComponent,
-    OutOfMemory,
-};
-
-/// Utility functions for parsing
-/// Check if a character is ASCII punctuation
-fn isAsciiPunctuation(ch: u8) bool {
-    return switch (ch) {
-        '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/', ':', ';', '<', '=', '>', '?', '@', '[', '\\', ']', '^', '_', '`', '{', '|', '}', '~' => true,
-        else => false,
-    };
-}
-
-/// Check if a codepoint is Unicode punctuation
-fn isUnicodePunctuation(codepoint: u21) bool {
-    // This is a simplified check - in a full implementation you'd use Unicode categories
-    return switch (codepoint) {
-        0x2E2B => true, // ⸫ (LATIN SMALL LETTER TURNED E)
-        else => false,
-    };
-}
-
-/// Check if a codepoint is Unicode whitespace
-fn isUnicodeWhitespace(codepoint: u21) bool {
-    return switch (codepoint) {
-        0x2009 => true, // THIN SPACE
-        0x200A => true, // HAIR SPACE
-        0x2028 => true, // LINE SEPARATOR
-        0x2029 => true, // PARAGRAPH SEPARATOR
-        else => false,
-    };
-}
-
-/// Check if a character or codepoint terminates a single-word component
-fn isWordTerminator(slice: []const u8, index: usize) bool {
-    if (index >= slice.len) return true;
-
-    const ch = slice[index];
-
-    // ASCII space, tab, newline
-    if (ch <= 127 and std.ascii.isWhitespace(ch)) return true;
-
-    // ASCII punctuation
-    if (isAsciiPunctuation(ch)) return true;
-
-    // Check for Unicode sequences
-    const view = std.unicode.Utf8View.init(slice[index..]) catch return true;
-    var iterator = view.iterator();
-    if (iterator.nextCodepoint()) |codepoint| {
-        if (isUnicodePunctuation(codepoint) or isUnicodeWhitespace(codepoint)) return true;
-    }
-
-    return false;
-}
-
-/// Parse a fraction string into a float
-fn parseFraction(str: []const u8) ?f64 {
-    var trimmed = std.mem.trim(u8, str, " \t");
-
-    if (std.mem.indexOf(u8, trimmed, "/")) |slash_pos| {
-        const num_str = std.mem.trim(u8, trimmed[0..slash_pos], " \t");
-        const den_str = std.mem.trim(u8, trimmed[slash_pos + 1 ..], " \t");
-
-        // Check for leading zeros (invalid)
-        if (num_str.len > 1 and num_str[0] == '0') return null;
-        if (den_str.len > 1 and den_str[0] == '0') return null;
-
-        const numerator = std.fmt.parseFloat(f64, num_str) catch return null;
-        const denominator = std.fmt.parseFloat(f64, den_str) catch return null;
-
-        if (denominator == 0) return null;
-        return numerator / denominator;
-    }
-
-    return null;
-}
-
-/// Parse a quantity string into a Quantity
-fn parseQuantity(str: []const u8, allocator: Allocator) !Quantity {
-    const trimmed = std.mem.trim(u8, str, " \t");
-    if (trimmed.len == 0) return Quantity{ .text = try allocator.dupe(u8, "") };
-
-    // Try parsing as fraction first
-    if (parseFraction(trimmed)) |fraction| {
-        return Quantity{ .number = fraction };
-    }
-
-    // Try parsing as regular number
-    if (std.fmt.parseFloat(f64, trimmed)) |number| {
-        return Quantity{ .number = number };
-    } else |_| {
-        // Keep as text
-        return Quantity{ .text = try allocator.dupe(u8, trimmed) };
-    }
-}
 
 /// Parse component content within braces
 fn parseComponentContent(content: []const u8, allocator: Allocator) !struct { quantity: ?Quantity, units: ?[]const u8 } {
@@ -129,57 +40,41 @@ fn parseComponentContent(content: []const u8, allocator: Allocator) !struct { qu
         const quantity_str = std.mem.trim(u8, trimmed[0..percent_pos], " \t");
         const units_str = std.mem.trim(u8, trimmed[percent_pos + 1 ..], " \t");
 
-        const quantity = if (quantity_str.len > 0) try parseQuantity(quantity_str, allocator) else null;
+        const parsed_quantity = if (quantity_str.len > 0) try quantity.parseQuantity(quantity_str, allocator) else null;
         const units = if (units_str.len > 0) try allocator.dupe(u8, units_str) else null;
 
-        return .{ .quantity = quantity, .units = units };
+        return .{ .quantity = parsed_quantity, .units = units };
     } else {
         // No % separator, everything is quantity
-        const quantity = try parseQuantity(trimmed, allocator);
-        return .{ .quantity = quantity, .units = null };
+        const parsed_quantity = try quantity.parseQuantity(trimmed, allocator);
+        return .{ .quantity = parsed_quantity, .units = null };
     }
-}
-
-test "fraction parsing" {
-    try testing.expectEqual(@as(?f64, 0.5), parseFraction("1/2"));
-    try testing.expectEqual(@as(?f64, 0.5), parseFraction(" 1 / 2 "));
-    try testing.expectEqual(@as(?f64, null), parseFraction("01/2"));
-    try testing.expectEqual(@as(?f64, null), parseFraction("1/02"));
-    try testing.expectEqual(@as(?f64, 2.5), parseFraction("5/2"));
-}
-
-test "quantity parsing" {
-    const allocator = testing.allocator;
-
-    const q1 = try parseQuantity("1/2", allocator);
-    try testing.expectEqual(@as(f64, 0.5), q1.number);
-
-    const q2 = try parseQuantity("42", allocator);
-    try testing.expectEqual(@as(f64, 42), q2.number);
-
-    const q3 = try parseQuantity("few", allocator);
-    try testing.expectEqualStrings("few", q3.text);
-    allocator.free(q3.text);
-}
-
-test "word termination" {
-    try testing.expect(isWordTerminator("abc def", 3));
-    try testing.expect(isWordTerminator("abc,def", 3));
-    try testing.expect(isWordTerminator("abc", 3));
-    try testing.expect(!isWordTerminator("abcdef", 3));
 }
 
 /// Extract component name from text, handling both single and multi-word cases
-fn extractComponentName(text: []const u8, start_index: usize, allocator: Allocator) !struct { name: []const u8, end_index: usize } {
+fn extractComponentName(text: []const u8, start_index: usize, line: usize, allocator: Allocator) !struct { name: []const u8, end_index: usize } {
     var index = start_index;
 
     // Skip the @ # or ~ symbol
-    if (index < text.len and (text[index] == '@' or text[index] == '#' or text[index] == '~')) {
-        index += 1;
-    }
+    const symbol = if (index < text.len and (text[index] == '@' or text[index] == '#' or text[index] == '~'))
+        text[index]
+    else
+        return error.InvalidComponent;
+    index += 1;
 
     // Check for invalid syntax (space immediately after symbol)
     if (index < text.len and text[index] == ' ') {
+        const kind: errors.ComponentKind = switch (symbol) {
+            '@' => .ingredient,
+            '#' => .cookware,
+            '~' => .timer,
+            else => unreachable,
+        };
+        std.log.err("Space after {s} symbol at line {d}, column {d}\n", .{ kind.name(), line, index + 1 });
+        std.log.err("  {s}\n", .{text});
+        std.log.err("  ", .{});
+        for (0..index - 1) |_| std.log.err(" ", .{});
+        std.log.err("^ Remove the space after the symbol\n", .{});
         return error.InvalidComponent;
     }
 
@@ -188,7 +83,7 @@ fn extractComponentName(text: []const u8, start_index: usize, allocator: Allocat
 
     // First, try single-word parsing (find word boundary)
     var single_word_end = index;
-    while (single_word_end < text.len and !isWordTerminator(text, single_word_end)) {
+    while (single_word_end < text.len and !helpers.isWordTerminator(text, single_word_end)) {
         single_word_end += 1;
     }
 
@@ -212,6 +107,17 @@ fn extractComponentName(text: []const u8, start_index: usize, allocator: Allocat
     } else {
         // Single word case without braces: @ingredient
         if (single_word_end == name_start) {
+            const kind: errors.ComponentKind = switch (symbol) {
+                '@' => .ingredient,
+                '#' => .cookware,
+                '~' => .timer,
+                else => unreachable,
+            };
+            std.log.err("Empty {s} name at line {d}, column {d}\n", .{ kind.name(), line, start_index + 1 });
+            std.log.err("  {s}\n", .{text});
+            std.log.err("  ", .{});
+            for (0..start_index) |_| std.log.err(" ", .{});
+            std.log.err("^ Add a name after '{c}'\n", .{symbol});
             return error.InvalidComponent;
         }
 
@@ -221,14 +127,14 @@ fn extractComponentName(text: []const u8, start_index: usize, allocator: Allocat
 }
 
 /// Parse a component (ingredient, cookware, or timer) starting at the given index
-fn parseComponent(text: []const u8, start_index: usize, component_type: ComponentType, allocator: Allocator) !struct { component: Component, end_index: usize } {
+fn parseComponent(text: []const u8, start_index: usize, component_type: ComponentType, line: usize, allocator: Allocator) !struct { component: Component, end_index: usize } {
     // Extract name
-    const name_result = extractComponentName(text, start_index, allocator) catch {
-        return error.InvalidComponent;
+    const name_result = extractComponentName(text, start_index, line, allocator) catch |err| {
+        return err;
     };
 
     var index = name_result.end_index;
-    var quantity: ?Quantity = null;
+    var parsed_quantity: ?Quantity = null;
     var units: ?[]const u8 = null;
 
     // Check for braces with content
@@ -248,12 +154,23 @@ fn parseComponent(text: []const u8, start_index: usize, component_type: Componen
         }
 
         if (brace_depth > 0) {
+            const kind: errors.ComponentKind = switch (component_type) {
+                .ingredient => .ingredient,
+                .cookware => .cookware,
+                .timer => .timer,
+                else => unreachable,
+            };
+            std.log.err("Unmatched opening brace in {s} at line {d}, column {d}\n", .{ kind.name(), line, brace_start });
+            std.log.err("  {s}\n", .{text});
+            std.log.err("  ", .{});
+            for (0..brace_start - 1) |_| std.log.err(" ", .{});
+            std.log.err("^ Opening brace here, no closing brace found\n", .{});
             return error.InvalidComponent;
         }
 
         const content = text[brace_start .. index - 1]; // Exclude closing brace
         const parsed = try parseComponentContent(content, allocator);
-        quantity = parsed.quantity;
+        parsed_quantity = parsed.quantity;
         units = parsed.units;
     }
 
@@ -261,7 +178,7 @@ fn parseComponent(text: []const u8, start_index: usize, component_type: Componen
     var component = Component{
         .type = component_type,
         .name = name_result.name,
-        .quantity = quantity,
+        .quantity = parsed_quantity,
         .units = units,
         .value = null,
     };
@@ -289,55 +206,6 @@ fn parseComponent(text: []const u8, start_index: usize, component_type: Componen
     }
 
     return .{ .component = component, .end_index = index };
-}
-
-/// Parse YAML front matter
-fn parseYamlFrontMatter(text: []const u8, allocator: Allocator) !struct { metadata: Metadata, end_index: usize } {
-    var metadata = Metadata.init(allocator);
-
-    if (!std.mem.startsWith(u8, text, "---")) {
-        return .{ .metadata = metadata, .end_index = 0 };
-    }
-
-    // Find the end of front matter
-    var lines = std.mem.splitSequence(u8, text[3..], "\n");
-    var current_pos: usize = 3; // Start after initial "---"
-
-    // Skip the newline after initial "---"
-    if (current_pos < text.len and text[current_pos] == '\n') {
-        current_pos += 1;
-    }
-
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-
-        if (std.mem.eql(u8, trimmed, "---")) {
-            current_pos += line.len + 1; // Include the closing ---
-            return .{ .metadata = metadata, .end_index = current_pos };
-        }
-
-        // Parse key: value pairs
-        if (std.mem.indexOf(u8, trimmed, ":")) |colon_pos| {
-            const key = std.mem.trim(u8, trimmed[0..colon_pos], " \t");
-            const value = std.mem.trim(u8, trimmed[colon_pos + 1 ..], " \t");
-
-            if (key.len > 0 and value.len > 0) {
-                try metadata.put(try allocator.dupe(u8, key), try allocator.dupe(u8, value));
-            }
-        }
-
-        current_pos += line.len + 1; // +1 for newline
-    }
-
-    // No closing ---, treat as invalid
-    var iterator = metadata.iterator();
-    while (iterator.next()) |entry| {
-        allocator.free(entry.key_ptr.*);
-        allocator.free(entry.value_ptr.*);
-    }
-    metadata.deinit();
-
-    return error.InvalidYamlFrontMatter;
 }
 
 /// Remove comments from a line
@@ -383,29 +251,29 @@ fn addComponentToStep(step: *Step, component: Component, allocator: Allocator) !
             // Combine with previous text component
             const existing_text = step.items[last_idx].value.?;
             const new_text = component.value.?;
-            
+
             // Create combined text
             const combined_len = existing_text.len + new_text.len;
             const combined_text = try allocator.alloc(u8, combined_len);
             @memcpy(combined_text[0..existing_text.len], existing_text);
             @memcpy(combined_text[existing_text.len..], new_text);
-            
+
             // Free old texts
             allocator.free(existing_text);
             allocator.free(new_text);
-            
+
             // Update the existing component
             step.items[last_idx].value = combined_text;
             return;
         }
     }
-    
+
     // No combination needed, just append
     try step.append(allocator, component);
 }
 
 /// Parse a single line into components
-fn parseLine(line: []const u8, allocator: Allocator) !ArrayList(Component) {
+fn parseLine(line: []const u8, line_num: usize, allocator: Allocator) !ArrayList(Component) {
     var step_components = ArrayList(Component){};
     errdefer {
         for (step_components.items) |*component| {
@@ -440,7 +308,7 @@ fn parseLine(line: []const u8, allocator: Allocator) !ArrayList(Component) {
             };
 
             // Try to parse component
-            if (parseComponent(clean_line, index, component_type, allocator)) |result| {
+            if (parseComponent(clean_line, index, component_type, line_num, allocator)) |result| {
                 try step_components.append(allocator, result.component);
                 index = result.end_index;
                 text_start = index;
@@ -464,13 +332,38 @@ fn parseLine(line: []const u8, allocator: Allocator) !ArrayList(Component) {
     return step_components;
 }
 
-/// Main parser function
+/// Parse a CookLang recipe from text
+///
+/// This is the main entry point for parsing CookLang recipes. It handles:
+/// - YAML front matter (metadata)
+/// - Ingredients: @ingredient{quantity%units}
+/// - Cookware: #cookware{quantity}
+/// - Timers: ~timer{quantity%units}
+/// - Comments: -- line comments and [- block comments -]
+/// - Step separation by empty lines
+///
+/// Parameters:
+///   - text: The CookLang recipe text to parse
+///   - allocator: Memory allocator for dynamic allocations
+///
+/// Returns: A Recipe struct containing parsed steps and metadata
+///
+/// Errors:
+///   - InvalidYamlFrontMatter: If YAML front matter is malformed
+///   - InvalidComponent: If ingredient/cookware/timer syntax is invalid
+///   - OutOfMemory: If allocation fails
+///
+/// Example:
+/// ```zig
+/// var recipe = try cooklang.parseRecipe("Add @salt{1%tsp}.", allocator);
+/// defer recipe.deinit();
+/// ```
 pub fn parseRecipe(text: []const u8, allocator: Allocator) !Recipe {
     var recipe = Recipe.init(allocator);
     errdefer recipe.deinit();
 
     // Parse YAML front matter
-    const yaml_result = try parseYamlFrontMatter(text, allocator);
+    const yaml_result = try yaml.parseYamlFrontMatter(text, allocator);
     recipe.metadata = yaml_result.metadata;
 
     // Get content after front matter
@@ -479,6 +372,15 @@ pub fn parseRecipe(text: []const u8, allocator: Allocator) !Recipe {
     // Split into lines and group into steps
     var lines = std.mem.splitSequence(u8, content, "\n");
     var current_step: ?*Step = null;
+    var line_number: usize = 1;
+
+    // Count lines in front matter for proper line numbering
+    if (yaml_result.end_index > 0 and yaml_result.end_index <= text.len) {
+        var fm_iter = std.mem.splitSequence(u8, text[0..yaml_result.end_index], "\n");
+        while (fm_iter.next()) |_| {
+            line_number += 1;
+        }
+    }
 
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
@@ -489,6 +391,7 @@ pub fn parseRecipe(text: []const u8, allocator: Allocator) !Recipe {
                 // Empty line ends current step
                 current_step = null;
             }
+            line_number += 1;
             continue;
         }
 
@@ -498,13 +401,15 @@ pub fn parseRecipe(text: []const u8, allocator: Allocator) !Recipe {
         }
 
         // Parse line into components
-        var line_components = try parseLine(line, allocator);
+        var line_components = try parseLine(line, line_number, allocator);
         defer line_components.deinit(allocator);
 
         // Add components to current step (transfer ownership)
         for (line_components.items) |component| {
             try addComponentToStep(current_step.?, component, allocator);
         }
+
+        line_number += 1;
     }
 
     return recipe;
