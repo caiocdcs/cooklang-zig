@@ -4,16 +4,22 @@ A complete implementation of the [CookLang specification](https://cooklang.org/d
 
 ## Features
 
-This parser implements the full CookLang specification including:
+- **Full CookLang Spec Support**: Ingredients, cookware, timers, comments, metadata, steps
+- **Rich Error Messages**: Context-aware errors with line numbers, source context, and helpful suggestions
+- **Multiple Output Formats**: Human-readable, JSON, and Markdown output
+- **Modular Architecture**: Clean separation of concerns with focused modules
+- **Comprehensive Tests**: 60 canonical tests covering the full specification
 
-- **Ingredients**: `@ingredient{quantity%units}` syntax with support for fractions, numbers, and text quantities
-- **Cookware**: `#cookware{quantity}` syntax for kitchen equipment
-- **Timers**: `~timer{quantity%units}` and `~{quantity%units}` syntax for timing instructions
+### CookLang Features Supported:
+
+- **Ingredients**: `@ingredient{quantity%units}` with fractions, numbers, and text quantities
+- **Cookware**: `#cookware{quantity}` for kitchen equipment
+- **Timers**: `~timer{quantity%units}` for timing instructions
 - **Comments**: Line comments (`--`) and block comments (`[- -]`)
-- **Metadata**: YAML front matter support for recipe metadata
+- **Metadata**: YAML front matter with quoted strings, colons in values
 - **Steps**: Automatic paragraph-based step separation
-- **Unicode Support**: Proper handling of Unicode punctuation and whitespace
-- **Fraction Parsing**: Automatic conversion of fractions like `1/2` to decimal values
+- **Unicode**: Proper handling of Unicode punctuation and whitespace
+- **Fractions**: Automatic conversion like `1/2` → 0.5
 
 ## Usage
 
@@ -240,36 +246,49 @@ just list
 just test
 ```
 
-## Building
+## Installation
 
-### Requirements
+### Using Nix Flakes (Recommended)
+
+```bash
+# Run directly without installing
+nix run github:caiocdcs/cooklang-zig -- recipe.cook
+
+# Install to your profile
+nix profile install github:caiocdcs/cooklang-zig
+
+# Or enter development shell
+nix develop  # Provides Zig, just, and all dependencies
+just build
+```
+
+### Pre-built Binaries
+
+Download from the [Releases](https://github.com/caiocdcs/cooklang-zig/releases) page.
+
+### Building from Source
+
+#### Requirements
 - Zig 0.15 or later
 - `just` command runner ([installation guide](https://github.com/casey/just#installation))
 
-### Build Instructions
+#### Build Instructions
 
 ```bash
-git clone <repository>
+git clone https://github.com/caiocdcs/cooklang-zig
 cd cooklang-zig
 
-# Build the project
-just build
-
-# Build with optimizations
-just build-fast
-
-# Install globally (optional)
-just install
+just build          # Build
+just test           # Run tests
+just install        # Install globally
 ```
 
-### Alternative: Direct Zig Build
-
-If you prefer not to use `just`, you can still use Zig directly:
+#### Alternative: Direct Zig Build
 
 ```bash
-zig build                    # Build project
-zig build run -- demo       # Run demo
-zig build run -- test       # Run tests
+zig build
+zig build test
+zig build install
 ```
 
 ## Sample Files
@@ -324,12 +343,4 @@ Pour in eggs and cook for ~{2%minutes}, stirring constantly.
 Season with @salt and @pepper{} to taste.
 ```
 
-## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-### MIT License Summary
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.

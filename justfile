@@ -30,6 +30,11 @@ install-optimized:
 test:
     zig build test --summary all
 
+# Run all tests (unit + canonical)
+test-all:
+    zig build test --summary all
+    zig build run -- test
+
 # Run canonical tests (all tests)
 test-parser:
     zig build run -- test
@@ -93,3 +98,7 @@ check:
 # Profile build time
 profile-build:
     @time zig build -Doptimize=ReleaseFast
+
+# Run all CI checks (format, build, test)
+ci: fmt-check check test-all
+    @echo "All CI checks passed"
