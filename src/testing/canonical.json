@@ -2,7 +2,7 @@
   "version": 7,
   "tests": {
     "testBasicDirection": {
-      "source": "Add a bit of chilli",
+      "source": "Add a bit of chilli\n",
       "result": {
         "steps": [
           [
@@ -16,14 +16,14 @@
       }
     },
     "testComments": {
-      "source": "-- testing comments",
+      "source": "-- testing comments\n",
       "result": {
         "steps": [],
         "metadata": {}
       }
     },
     "testCommentsAfterIngredients": {
-      "source": "@thyme{2%sprigs} -- testing comments\nand some text",
+      "source": "@thyme{2%sprigs} -- testing comments\nand some text\n",
       "result": {
         "steps": [
           [
@@ -35,7 +35,7 @@
             },
             {
               "type": "text",
-              "value": " and some text"
+              "value": "  and some text"
             }
           ]
         ],
@@ -43,7 +43,7 @@
       }
     },
     "testCommentsWithIngredients": {
-      "source": "-- testing comments\n@thyme{2%sprigs}",
+      "source": "-- testing comments\n@thyme{2%sprigs}\n",
       "result": {
         "steps": [
           [
@@ -59,7 +59,7 @@
       }
     },
     "testDirectionsWithDegrees": {
-      "source": "Heat oven up to 200°C",
+      "source": "Heat oven up to 200°C\n",
       "result": {
         "steps": [
           [
@@ -73,7 +73,7 @@
       }
     },
     "testDirectionsWithNumbers": {
-      "source": "Heat 5L of water",
+      "source": "Heat 5L of water\n",
       "result": {
         "steps": [
           [
@@ -87,7 +87,7 @@
       }
     },
     "testDirectionWithIngredient": {
-      "source": "Add @chilli{3%items}, @ginger{10%g} and @milk{1%l}.",
+      "source": "Add @chilli{3%items}, @ginger{10%g} and @milk{1%l}.\n",
       "result": {
         "steps": [
           [
@@ -131,7 +131,7 @@
       }
     },
     "testEquipmentMultipleWords": {
-      "source": "Fry in #frying pan{}",
+      "source": "Fry in #frying pan{}\n",
       "result": {
         "steps": [
           [
@@ -150,7 +150,7 @@
       }
     },
     "testEquipmentMultipleWordsWithLeadingNumber": {
-      "source": "Fry in #7-inch nonstick frying pan{ }",
+      "source": "Fry in #7-inch nonstick frying pan{ }\n",
       "result": {
         "steps": [
           [
@@ -169,7 +169,7 @@
       }
     },
     "testEquipmentMultipleWordsWithSpaces": {
-      "source": "Fry in #frying pan{ }",
+      "source": "Fry in #frying pan{ }\n",
       "result": {
         "steps": [
           [
@@ -188,7 +188,7 @@
       }
     },
     "testEquipmentOneWord": {
-      "source": "Simmer in #pan for some time",
+      "source": "Simmer in #pan for some time\n",
       "result": {
         "steps": [
           [
@@ -211,7 +211,7 @@
       }
     },
     "testEquipmentQuantity": {
-      "source": "#frying pan{2}",
+      "source": "#frying pan{2}\n",
       "result": {
         "steps": [
           [
@@ -226,7 +226,7 @@
       }
     },
     "testEquipmentQuantityOneWord": {
-      "source": "#frying pan{three}",
+      "source": "#frying pan{three}\n",
       "result": {
         "steps": [
           [
@@ -241,7 +241,7 @@
       }
     },
     "testEquipmentQuantityMultipleWords": {
-      "source": "#frying pan{two small}",
+      "source": "#frying pan{two small}\n",
       "result": {
         "steps": [
           [
@@ -256,7 +256,7 @@
       }
     },
     "testFractions": {
-      "source": "@milk{1/2%cup}",
+      "source": "@milk{1/2%cup}\n",
       "result": {
         "steps": [
           [
@@ -272,7 +272,7 @@
       }
     },
     "testFractionsInDirections": {
-      "source": "knife cut about every 1/2 inches",
+      "source": "knife cut about every 1/2 inches\n",
       "result": {
         "steps": [
           [
@@ -286,7 +286,7 @@
       }
     },
     "testFractionsLike": {
-      "source": "@milk{01/2%cup}",
+      "source": "@milk{01/2%cup}\n",
       "result": {
         "steps": [
           [
@@ -302,7 +302,7 @@
       }
     },
     "testFractionsWithSpaces": {
-      "source": "@milk{1 / 2 %cup}",
+      "source": "@milk{1 / 2 %cup}\n",
       "result": {
         "steps": [
           [
@@ -318,7 +318,7 @@
       }
     },
     "testIngredientMultipleWordsWithLeadingNumber": {
-      "source": "Top with @1000 island dressing{ }",
+      "source": "Top with @1000 island dressing{ }\n",
       "result": {
         "steps": [
           [
@@ -329,7 +329,8 @@
             {
               "type": "ingredient",
               "name": "1000 island dressing",
-              "quantity": "some"
+              "quantity": "some",
+              "units": ""
             }
           ]
         ],
@@ -337,7 +338,7 @@
       }
     },
     "testIngredientWithEmoji": {
-      "source": "Add some @salt",
+      "source": "Add some @🧂\n",
       "result": {
         "steps": [
           [
@@ -347,8 +348,9 @@
             },
             {
               "type": "ingredient",
-              "name": "salt",
-              "quantity": "some"
+              "name": "🧂",
+              "quantity": "some",
+              "units": ""
             }
           ]
         ],
@@ -356,7 +358,7 @@
       }
     },
     "testIngredientExplicitUnits": {
-      "source": "@chilli{3%items}",
+      "source": "@chilli{3%items}\n",
       "result": {
         "steps": [
           [
@@ -372,7 +374,7 @@
       }
     },
     "testIngredientExplicitUnitsWithSpaces": {
-      "source": "@chilli{ 3 % items }",
+      "source": "@chilli{ 3 % items }\n",
       "result": {
         "steps": [
           [
@@ -388,14 +390,15 @@
       }
     },
     "testIngredientImplicitUnits": {
-      "source": "@chilli{3}",
+      "source": "@chilli{3}\n",
       "result": {
         "steps": [
           [
             {
               "type": "ingredient",
               "name": "chilli",
-              "quantity": 3
+              "quantity": 3,
+              "units": ""
             }
           ]
         ],
@@ -403,14 +406,15 @@
       }
     },
     "testIngredientNoUnits": {
-      "source": "@chilli",
+      "source": "@chilli\n",
       "result": {
         "steps": [
           [
             {
               "type": "ingredient",
               "name": "chilli",
-              "quantity": "some"
+              "quantity": "some",
+              "units": ""
             }
           ]
         ],
@@ -418,14 +422,15 @@
       }
     },
     "testIngredientNoUnitsNotOnlyString": {
-      "source": "@5peppers",
+      "source": "@5peppers\n",
       "result": {
         "steps": [
           [
             {
               "type": "ingredient",
               "name": "5peppers",
-              "quantity": "some"
+              "quantity": "some",
+              "units": ""
             }
           ]
         ],
@@ -433,7 +438,7 @@
       }
     },
     "testIngredientWithNumbers": {
-      "source": "@tipo 00 flour{250%g}",
+      "source": "@tipo 00 flour{250%g}\n",
       "result": {
         "steps": [
           [
@@ -449,14 +454,15 @@
       }
     },
     "testIngredientWithoutStopper": {
-      "source": "@chilli cut into pieces",
+      "source": "@chilli cut into pieces\n",
       "result": {
         "steps": [
           [
             {
               "type": "ingredient",
               "name": "chilli",
-              "quantity": "some"
+              "quantity": "some",
+              "units": ""
             },
             {
               "type": "text",
@@ -468,7 +474,7 @@
       }
     },
     "testMetadata": {
-      "source": "---\nsourced: babooshka\n---",
+      "source": "---\nsourced: babooshka\n---\n",
       "result": {
         "steps": [],
         "metadata": {
@@ -477,13 +483,13 @@
       }
     },
     "testMetadataBreak": {
-      "source": "hello ---\nsourced: babooshka\n---",
+      "source": "hello ---\nsourced: babooshka\n---\n",
       "result": {
         "steps": [
           [
             {
               "type": "text",
-              "value": "hello sourced: babooshka"
+              "value": "hello --- sourced: babooshka ---"
             }
           ]
         ],
@@ -491,7 +497,7 @@
       }
     },
     "testMetadataMultiwordKey": {
-      "source": "---\ncooking time: 30 mins\n---",
+      "source": "---\ncooking time: 30 mins\n---\n",
       "result": {
         "steps": [],
         "metadata": {
@@ -500,7 +506,7 @@
       }
     },
     "testMetadataMultiwordKeyWithSpaces": {
-      "source": "---\ncooking time    :30 mins\n---",
+      "source": "---\ncooking time    :30 mins\n---\n",
       "result": {
         "steps": [],
         "metadata": {
@@ -509,7 +515,7 @@
       }
     },
     "testMultiLineDirections": {
-      "source": "Add a bit of chilli\n\nAdd a bit of hummus",
+      "source": "Add a bit of chilli\n\nAdd a bit of hummus\n",
       "result": {
         "steps": [
           [
@@ -529,24 +535,25 @@
       }
     },
     "testMultipleLines": {
-      "source": "---\nPrep Time: 15 minutes\nCook Time: 30 minutes\n---",
+      "source": "---\nPrep Time: 15 minutes\nCook Time: 30 minutes\n---\n",
       "result": {
         "steps": [],
         "metadata": {
-          "Cook Time": "30 minutes",
-          "Prep Time": "15 minutes"
+          "Prep Time": "15 minutes",
+          "Cook Time": "30 minutes"
         }
       }
     },
     "testMultiWordIngredient": {
-      "source": "@hot chilli{3}",
+      "source": "@hot chilli{3}\n",
       "result": {
         "steps": [
           [
             {
               "type": "ingredient",
               "name": "hot chilli",
-              "quantity": 3
+              "quantity": 3,
+              "units": ""
             }
           ]
         ],
@@ -554,14 +561,15 @@
       }
     },
     "testMultiWordIngredientNoAmount": {
-      "source": "@hot chilli{}",
+      "source": "@hot chilli{}\n",
       "result": {
         "steps": [
           [
             {
               "type": "ingredient",
               "name": "hot chilli",
-              "quantity": "some"
+              "quantity": "some",
+              "units": ""
             }
           ]
         ],
@@ -569,14 +577,15 @@
       }
     },
     "testMutipleIngredientsWithoutStopper": {
-      "source": "@chilli cut into pieces and @garlic",
+      "source": "@chilli cut into pieces and @garlic\n",
       "result": {
         "steps": [
           [
             {
               "type": "ingredient",
               "name": "chilli",
-              "quantity": "some"
+              "quantity": "some",
+              "units": ""
             },
             {
               "type": "text",
@@ -585,7 +594,8 @@
             {
               "type": "ingredient",
               "name": "garlic",
-              "quantity": "some"
+              "quantity": "some",
+              "units": ""
             }
           ]
         ],
@@ -593,7 +603,7 @@
       }
     },
     "testQuantityAsText": {
-      "source": "@thyme{few%sprigs}",
+      "source": "@thyme{few%sprigs}\n",
       "result": {
         "steps": [
           [
@@ -609,14 +619,15 @@
       }
     },
     "testQuantityDigitalString": {
-      "source": "@water{7 k }",
+      "source": "@water{7 k }\n",
       "result": {
         "steps": [
           [
             {
               "type": "ingredient",
               "name": "water",
-              "quantity": "7 k"
+              "quantity": "7 k",
+              "units": ""
             }
           ]
         ],
@@ -624,7 +635,7 @@
       }
     },
     "testServings": {
-      "source": "---\nservings: 1|2|3\n---",
+      "source": "---\nservings: 1|2|3\n---\n",
       "result": {
         "steps": [],
         "metadata": {
@@ -633,7 +644,7 @@
       }
     },
     "testSlashInText": {
-      "source": "Preheat the oven to 200℃/Fan 180°C.",
+      "source": "Preheat the oven to 200℃/Fan 180°C.\n",
       "result": {
         "steps": [
           [
@@ -647,7 +658,7 @@
       }
     },
     "testTimerDecimal": {
-      "source": "Fry for ~{1.5%minutes}",
+      "source": "Fry for ~{1.5%minutes}\n",
       "result": {
         "steps": [
           [
@@ -657,9 +668,9 @@
             },
             {
               "type": "timer",
-              "name": "",
               "quantity": 1.5,
-              "units": "minutes"
+              "units": "minutes",
+              "name": ""
             }
           ]
         ],
@@ -667,7 +678,7 @@
       }
     },
     "testTimerFractional": {
-      "source": "Fry for ~{1/2%hour}",
+      "source": "Fry for ~{1/2%hour}\n",
       "result": {
         "steps": [
           [
@@ -677,9 +688,9 @@
             },
             {
               "type": "timer",
-              "name": "",
               "quantity": 0.5,
-              "units": "hour"
+              "units": "hour",
+              "name": ""
             }
           ]
         ],
@@ -687,7 +698,7 @@
       }
     },
     "testTimerInteger": {
-      "source": "Fry for ~{10%minutes}",
+      "source": "Fry for ~{10%minutes}\n",
       "result": {
         "steps": [
           [
@@ -697,9 +708,9 @@
             },
             {
               "type": "timer",
-              "name": "",
               "quantity": 10,
-              "units": "minutes"
+              "units": "minutes",
+              "name": ""
             }
           ]
         ],
@@ -707,7 +718,7 @@
       }
     },
     "testTimerWithName": {
-      "source": "Fry for ~potato{42%minutes}",
+      "source": "Fry for ~potato{42%minutes}\n",
       "result": {
         "steps": [
           [
@@ -717,9 +728,9 @@
             },
             {
               "type": "timer",
-              "name": "potato",
               "quantity": 42,
-              "units": "minutes"
+              "units": "minutes",
+              "name": "potato"
             }
           ]
         ],
@@ -727,7 +738,7 @@
       }
     },
     "testSingleWordTimer": {
-      "source": "Let it ~rest after plating",
+      "source": "Let it ~rest after plating\n",
       "result": {
         "steps": [
           [
@@ -737,6 +748,8 @@
             },
             {
               "type": "timer",
+              "quantity": "",
+              "units": "",
               "name": "rest"
             },
             {
@@ -749,7 +762,7 @@
       }
     },
     "testSingleWordTimerWithPunctuation": {
-      "source": "Let it ~rest, then serve",
+      "source": "Let it ~rest, then serve\n",
       "result": {
         "steps": [
           [
@@ -759,6 +772,8 @@
             },
             {
               "type": "timer",
+              "quantity": "",
+              "units": "",
               "name": "rest"
             },
             {
@@ -771,7 +786,7 @@
       }
     },
     "testSingleWordTimerWithUnicodePunctuation": {
-      "source": "Let it ~rest⸫ then serve",
+      "source": "Let it ~rest⸫ then serve\n",
       "result": {
         "steps": [
           [
@@ -781,6 +796,8 @@
             },
             {
               "type": "timer",
+              "quantity": "",
+              "units": "",
               "name": "rest"
             },
             {
@@ -793,7 +810,7 @@
       }
     },
     "testTimerWithUnicodeWhitespace": {
-      "source": "Let it ~rest then serve",
+      "source": "Let it ~rest then serve\n",
       "result": {
         "steps": [
           [
@@ -803,6 +820,8 @@
             },
             {
               "type": "timer",
+              "quantity": "",
+              "units": "",
               "name": "rest"
             },
             {
@@ -815,13 +834,13 @@
       }
     },
     "testInvalidMultiWordTimer": {
-      "source": "It is ~ {5}",
+      "source": "It is ~ {5}\n",
       "result": {
         "steps": [
           [
             {
               "type": "text",
-              "value": "It is It is ~ {5}"
+              "value": "It is ~ {5}"
             }
           ]
         ],
@@ -829,13 +848,13 @@
       }
     },
     "testInvalidSingleWordTimer": {
-      "source": "It is ~ 5",
+      "source": "It is ~ 5\n",
       "result": {
         "steps": [
           [
             {
               "type": "text",
-              "value": "It is It is ~ 5"
+              "value": "It is ~ 5"
             }
           ]
         ],
@@ -843,7 +862,7 @@
       }
     },
     "testSingleWordIngredientWithPunctuation": {
-      "source": "Add some @chilli, then serve",
+      "source": "Add some @chilli, then serve\n",
       "result": {
         "steps": [
           [
@@ -853,8 +872,9 @@
             },
             {
               "type": "ingredient",
-              "name": "chilli",
-              "quantity": "some"
+              "quantity": "some",
+              "units": "",
+              "name": "chilli"
             },
             {
               "type": "text",
@@ -866,7 +886,7 @@
       }
     },
     "testSingleWordIngredientWithUnicodePunctuation": {
-      "source": "Add @chilli⸫ then bake",
+      "source": "Add @chilli⸫ then bake\n",
       "result": {
         "steps": [
           [
@@ -876,8 +896,9 @@
             },
             {
               "type": "ingredient",
-              "name": "chilli",
-              "quantity": "some"
+              "quantity": "some",
+              "units": "",
+              "name": "chilli"
             },
             {
               "type": "text",
@@ -889,7 +910,7 @@
       }
     },
     "testIngredientWithUnicodeWhitespace": {
-      "source": "Add @chilli then bake",
+      "source": "Add @chilli then bake\n",
       "result": {
         "steps": [
           [
@@ -899,8 +920,9 @@
             },
             {
               "type": "ingredient",
-              "name": "chilli",
-              "quantity": "some"
+              "quantity": "some",
+              "units": "",
+              "name": "chilli"
             },
             {
               "type": "text",
@@ -912,13 +934,13 @@
       }
     },
     "testInvalidMultiWordIngredient": {
-      "source": "Message @ example{}",
+      "source": "Message @ example{}\n",
       "result": {
         "steps": [
           [
             {
               "type": "text",
-              "value": "Message Message @ example{}"
+              "value": "Message @ example{}"
             }
           ]
         ],
@@ -926,13 +948,13 @@
       }
     },
     "testInvalidSingleWordIngredient": {
-      "source": "Message me @ example",
+      "source": "Message me @ example\n",
       "result": {
         "steps": [
           [
             {
               "type": "text",
-              "value": "Message me Message me @ example"
+              "value": "Message me @ example"
             }
           ]
         ],
@@ -940,7 +962,7 @@
       }
     },
     "testSingleWordCookwareWithPunctuation": {
-      "source": "Place in #pot, then boil",
+      "source": "Place in #pot, then boil\n",
       "result": {
         "steps": [
           [
@@ -950,8 +972,9 @@
             },
             {
               "type": "cookware",
-              "name": "pot",
-              "quantity": 1
+              "quantity": 1,
+              "units": "",
+              "name": "pot"
             },
             {
               "type": "text",
@@ -963,7 +986,7 @@
       }
     },
     "testSingleWordCookwareWithUnicodePunctuation": {
-      "source": "Place in #pot⸫ then boil",
+      "source": "Place in #pot⸫ then boil\n",
       "result": {
         "steps": [
           [
@@ -973,8 +996,9 @@
             },
             {
               "type": "cookware",
-              "name": "pot",
-              "quantity": 1
+              "quantity": 1,
+              "units": "",
+              "name": "pot"
             },
             {
               "type": "text",
@@ -986,7 +1010,7 @@
       }
     },
     "testCookwareWithUnicodeWhitespace": {
-      "source": "Add to #pot then boil",
+      "source": "Add to #pot then boil\n",
       "result": {
         "steps": [
           [
@@ -996,8 +1020,9 @@
             },
             {
               "type": "cookware",
-              "name": "pot",
-              "quantity": 1
+              "quantity": 1,
+              "units": "",
+              "name": "pot"
             },
             {
               "type": "text",
@@ -1009,13 +1034,13 @@
       }
     },
     "testInvalidMultiWordCookware": {
-      "source": "Recipe # 10{}",
+      "source": "Recipe # 10{}\n",
       "result": {
         "steps": [
           [
             {
               "type": "text",
-              "value": "Recipe Recipe # 10{}"
+              "value": "Recipe # 10{}"
             }
           ]
         ],
@@ -1023,13 +1048,13 @@
       }
     },
     "testInvalidSingleWordCookware": {
-      "source": "Recipe # 5",
+      "source": "Recipe # 5\n",
       "result": {
         "steps": [
           [
             {
               "type": "text",
-              "value": "Recipe Recipe # 5"
+              "value": "Recipe # 5"
             }
           ]
         ],

@@ -31,27 +31,19 @@ pub fn isUnicodeWhitespace(codepoint: u21) bool {
     };
 }
 
-/// Check if a character or codepoint terminates a single-word component
-/// Returns true if the character at the given index is a word boundary
+/// True if the byte at `index` ends a single-word component name: end of
+/// input, whitespace or punctuation (ASCII or Unicode). Bytes inside a
+/// multibyte UTF-8 sequence never end a word; invalid UTF-8 does.
 pub fn isWordTerminator(slice: []const u8, index: usize) bool {
     if (index >= slice.len) return true;
-
     const ch = slice[index];
+    if (ch < 0x80) return std.ascii.isWhitespace(ch) or isAsciiPunctuation(ch);
+    if (ch & 0xC0 == 0x80) return false; // continuation byte
 
-    // ASCII space, tab, newline
-    if (ch <= 127 and std.ascii.isWhitespace(ch)) return true;
-
-    // ASCII punctuation
-    if (isAsciiPunctuation(ch)) return true;
-
-    // Check for Unicode sequences
-    const view = std.unicode.Utf8View.init(slice[index..]) catch return true;
-    var iterator = view.iterator();
-    if (iterator.nextCodepoint()) |codepoint| {
-        if (isUnicodePunctuation(codepoint) or isUnicodeWhitespace(codepoint)) return true;
-    }
-
-    return false;
+    const len = std.unicode.utf8ByteSequenceLength(ch) catch return true;
+    if (index + len > slice.len) return true;
+    const codepoint = std.unicode.utf8Decode(slice[index..][0..len]) catch return true;
+    return isUnicodePunctuation(codepoint) or isUnicodeWhitespace(codepoint);
 }
 
 const testing = std.testing;
@@ -61,6 +53,10 @@ test "word termination" {
     try testing.expect(isWordTerminator("abc,def", 3));
     try testing.expect(isWordTerminator("abc", 3));
     try testing.expect(!isWordTerminator("abcdef", 3));
+    // 🧂 is four bytes; none of them ends the word.
+    for (0..4) |i| try testing.expect(!isWordTerminator("🧂", i));
+    try testing.expect(isWordTerminator("a\u{2009}b", 1));
+    try testing.expect(isWordTerminator("a\u{2E2B}b", 1));
 }
 
 test "ascii punctuation detection" {

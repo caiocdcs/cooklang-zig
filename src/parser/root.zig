@@ -1,589 +1,417 @@
-//! CookLang parser
-//! Implements the CookLang specification from https://cooklang.org/docs/spec/
+//! A CookLang parser: https://cooklang.org/docs/spec/
+//!
+//! ```zig
+//! var diag: cooklang.Diagnostic = .{};
+//! var recipe = cooklang.parse(gpa, source, &diag) catch |err| switch (err) {
+//!     error.InvalidFrontMatter => {
+//!         std.debug.print("{f}\n", .{diag});
+//!         return err;
+//!     },
+//!     else => return err,
+//! };
+//! defer recipe.deinit();
+//! ```
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const HashMap = std.HashMap;
-const testing = std.testing;
 
-// Import component types
 const components = @import("components.zig");
-const quantity = @import("quantity.zig");
 const helpers = @import("helpers.zig");
+const quantity = @import("quantity.zig");
 const yaml = @import("yaml.zig");
-const errors = @import("errors.zig");
 
-// Re-export error types
-pub const ParseError = errors.ParseError;
-pub const ParseErrorWithContext = errors.ParseErrorWithContext;
-pub const DetailedParseError = errors.DetailedParseError;
-pub const ComponentKind = errors.ComponentKind;
-
-// Re-export component types for public API
-pub const ComponentType = components.ComponentType;
 pub const Quantity = components.Quantity;
+pub const Ingredient = components.Ingredient;
+pub const Cookware = components.Cookware;
+pub const Timer = components.Timer;
 pub const Component = components.Component;
 pub const Step = components.Step;
 pub const Metadata = components.Metadata;
+pub const Diagnostic = components.Diagnostic;
 pub const Recipe = components.Recipe;
 
-/// Parse component content within braces
-fn parseComponentContent(content: []const u8, allocator: Allocator) !struct { quantity: ?Quantity, units: ?[]const u8 } {
-    const trimmed = std.mem.trim(u8, content, " \t");
-    if (trimmed.len == 0) {
-        return .{ .quantity = null, .units = null };
-    }
+pub const Error = error{
+    /// The recipe starts with a `---` line that is never closed.
+    InvalidFrontMatter,
+    OutOfMemory,
+};
 
-    // Look for % separator
-    if (std.mem.indexOf(u8, trimmed, "%")) |percent_pos| {
-        const quantity_str = std.mem.trim(u8, trimmed[0..percent_pos], " \t");
-        const units_str = std.mem.trim(u8, trimmed[percent_pos + 1 ..], " \t");
+/// Parses a CookLang recipe. Malformed components (`@ salt`, an unclosed
+/// `{`) are kept as text, as the spec says, and reported in
+/// `Recipe.warnings`. The only hard error is unclosed front matter; then
+/// `diag`, if given, says where.
+///
+/// The recipe owns copies of everything it needs, so `source` can be freed
+/// afterwards. `diag.source_line` is a slice of `source`.
+pub fn parse(gpa: Allocator, source: []const u8, diag: ?*Diagnostic) Error!Recipe {
+    const arena = try gpa.create(std.heap.ArenaAllocator);
+    errdefer gpa.destroy(arena);
+    arena.* = .init(gpa);
+    errdefer arena.deinit();
 
-        const parsed_quantity = if (quantity_str.len > 0) try quantity.parseQuantity(quantity_str, allocator) else null;
-        const units = if (units_str.len > 0) try allocator.dupe(u8, units_str) else null;
+    var parser: Parser = .{ .arena = arena.allocator() };
+    const text = try parser.arena.dupe(u8, source);
 
-        return .{ .quantity = parsed_quantity, .units = units };
-    } else {
-        // No % separator, everything is quantity
-        const parsed_quantity = try quantity.parseQuantity(trimmed, allocator);
-        return .{ .quantity = parsed_quantity, .units = null };
-    }
+    var metadata: Metadata = .empty;
+    const body_start = yaml.parseFrontMatter(parser.arena, text, &metadata) catch |err| switch (err) {
+        error.UnclosedFrontMatter => {
+            if (diag) |d| d.* = .{
+                .line = 1,
+                .column = 1,
+                .message = "front matter opened with '---' is never closed",
+                .source_line = firstLine(source),
+            };
+            return error.InvalidFrontMatter;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    try parser.parseBody(text[body_start..], 1 + std.mem.count(u8, text[0..body_start], "\n"));
+
+    return .{
+        .arena = arena,
+        .metadata = metadata,
+        .steps = try parser.steps.toOwnedSlice(parser.arena),
+        .warnings = try parser.warnings.toOwnedSlice(parser.arena),
+    };
 }
 
-/// Extract component name from text, handling both single and multi-word cases
-fn extractComponentName(text: []const u8, start_index: usize, line: usize, allocator: Allocator) !struct { name: []const u8, end_index: usize } {
-    var index = start_index;
+fn firstLine(text: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
+    return std.mem.trimEnd(u8, text[0..end], "\r");
+}
 
-    // Skip the @ # or ~ symbol
-    const symbol = if (index < text.len and (text[index] == '@' or text[index] == '#' or text[index] == '~'))
-        text[index]
-    else
-        return error.InvalidComponent;
-    index += 1;
+const Kind = enum {
+    ingredient,
+    cookware,
+    timer,
 
-    // Check for invalid syntax (space immediately after symbol)
-    if (index < text.len and text[index] == ' ') {
-        const kind: errors.ComponentKind = switch (symbol) {
+    fn of(ch: u8) ?Kind {
+        return switch (ch) {
             '@' => .ingredient,
             '#' => .cookware,
             '~' => .timer,
-            else => unreachable,
+            else => null,
         };
-        std.log.err("Space after {s} symbol at line {d}, column {d}\n", .{ kind.name(), line, index + 1 });
-        std.log.err("  {s}\n", .{text});
-        std.log.err("  ", .{});
-        for (0..index - 1) |_| std.log.err(" ", .{});
-        std.log.err("^ Remove the space after the symbol\n", .{});
-        return error.InvalidComponent;
     }
+};
 
-    // Look for opening brace for multi-word name
-    const name_start = index;
+/// All allocations go to the recipe's arena, so nothing here frees.
+const Parser = struct {
+    arena: Allocator,
+    steps: ArrayList(Step) = .empty,
+    warnings: ArrayList(Diagnostic) = .empty,
+    /// The step being built, null between paragraphs.
+    step: ?ArrayList(Component) = null,
 
-    // First, try single-word parsing (find word boundary)
-    var single_word_end = index;
-    while (single_word_end < text.len and !helpers.isWordTerminator(text, single_word_end)) {
-        single_word_end += 1;
-    }
-
-    // Check if there's a brace immediately after the single word
-    if (single_word_end < text.len and text[single_word_end] == '{') {
-        // Single word with braces case: @ingredient{...}
-        const name = text[name_start..single_word_end];
-        return .{ .name = try allocator.dupe(u8, name), .end_index = single_word_end };
-    }
-
-    // Scan ahead to see if there's a brace later (multi-word case)
-    var scan_index = single_word_end;
-    while (scan_index < text.len and text[scan_index] != '{' and text[scan_index] != '@' and text[scan_index] != '#' and text[scan_index] != '~') {
-        scan_index += 1;
-    }
-
-    if (scan_index < text.len and text[scan_index] == '{') {
-        // Multi-word name case: @multi word ingredient{...}
-        const name = std.mem.trim(u8, text[name_start..scan_index], " \t");
-        return .{ .name = try allocator.dupe(u8, name), .end_index = scan_index };
-    } else {
-        // Single word case without braces: @ingredient
-        if (single_word_end == name_start) {
-            const kind: errors.ComponentKind = switch (symbol) {
-                '@' => .ingredient,
-                '#' => .cookware,
-                '~' => .timer,
-                else => unreachable,
-            };
-            std.log.err("Empty {s} name at line {d}, column {d}\n", .{ kind.name(), line, start_index + 1 });
-            std.log.err("  {s}\n", .{text});
-            std.log.err("  ", .{});
-            for (0..start_index) |_| std.log.err(" ", .{});
-            std.log.err("^ Add a name after '{c}'\n", .{symbol});
-            return error.InvalidComponent;
-        }
-
-        const name = text[name_start..single_word_end];
-        return .{ .name = try allocator.dupe(u8, name), .end_index = single_word_end };
-    }
-}
-
-/// Parse a component (ingredient, cookware, or timer) starting at the given index
-fn parseComponent(text: []const u8, start_index: usize, component_type: ComponentType, line: usize, allocator: Allocator) !struct { component: Component, end_index: usize } {
-    // Extract name
-    const name_result = extractComponentName(text, start_index, line, allocator) catch |err| {
-        return err;
-    };
-
-    var index = name_result.end_index;
-    var parsed_quantity: ?Quantity = null;
-    var units: ?[]const u8 = null;
-
-    // Check for braces with content
-    if (index < text.len and text[index] == '{') {
-        index += 1; // Skip opening brace
-
-        // Find closing brace
-        const brace_start = index;
-        var brace_depth: u32 = 1;
-        while (index < text.len and brace_depth > 0) {
-            if (text[index] == '{') {
-                brace_depth += 1;
-            } else if (text[index] == '}') {
-                brace_depth -= 1;
+    fn parseBody(p: *Parser, body: []const u8, first_line_number: usize) Allocator.Error!void {
+        var lines = std.mem.splitScalar(u8, body, '\n');
+        var line_number = first_line_number;
+        while (lines.next()) |raw_line| : (line_number += 1) {
+            const line = std.mem.trimEnd(u8, raw_line, "\r");
+            const trimmed = std.mem.trim(u8, line, " \t");
+            if (trimmed.len == 0) {
+                try p.endStep();
+            } else if (!isCommentLine(trimmed)) {
+                if (p.step) |*step| {
+                    // Lines of one paragraph join with a space.
+                    if (step.items.len > 0) try appendText(p.arena, step, " ");
+                } else p.step = .empty;
+                try p.parseLine(line, line_number);
             }
-            index += 1;
         }
+        try p.endStep();
+    }
 
-        if (brace_depth > 0) {
-            const kind: errors.ComponentKind = switch (component_type) {
-                .ingredient => .ingredient,
-                .cookware => .cookware,
-                .timer => .timer,
-                else => unreachable,
+    fn endStep(p: *Parser) Allocator.Error!void {
+        if (p.step) |*step| {
+            // A paragraph of nothing but block comments is no step.
+            if (step.items.len > 0) try p.steps.append(p.arena, .{ .components = try step.toOwnedSlice(p.arena) });
+            p.step = null;
+        }
+    }
+
+    fn warn(p: *Parser, line: []const u8, line_number: usize, column: usize, message: []const u8) Allocator.Error!void {
+        try p.warnings.append(p.arena, .{
+            .line = line_number,
+            .column = column,
+            .message = message,
+            .source_line = line,
+        });
+    }
+
+    /// Appends the components of one line to the current step.
+    fn parseLine(p: *Parser, line: []const u8, line_number: usize) Allocator.Error!void {
+        const step = &p.step.?;
+        const clean = try removeComments(p.arena, line);
+
+        var index: usize = 0;
+        var text_start: usize = 0;
+        while (index < clean.len) {
+            const kind = Kind.of(clean[index]) orelse {
+                index += 1;
+                continue;
             };
-            std.log.err("Unmatched opening brace in {s} at line {d}, column {d}\n", .{ kind.name(), line, brace_start });
-            std.log.err("  {s}\n", .{text});
-            std.log.err("  ", .{});
-            for (0..brace_start - 1) |_| std.log.err(" ", .{});
-            std.log.err("^ Opening brace here, no closing brace found\n", .{});
+            const parsed = p.parseComponent(clean, index, kind, line, line_number) catch |err| switch (err) {
+                // Not a component: it stays part of the surrounding text.
+                error.InvalidComponent => {
+                    index += 1;
+                    continue;
+                },
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            if (index > text_start) try appendText(p.arena, step, clean[text_start..index]);
+            try step.append(p.arena, parsed.component);
+            index = parsed.end;
+            text_start = index;
+        }
+        if (clean.len > text_start) try appendText(p.arena, step, clean[text_start..]);
+    }
+
+    const Parsed = struct { component: Component, end: usize };
+
+    /// The component whose symbol is at `text[start]`, or InvalidComponent
+    /// (with a warning) when the syntax doesn't form one.
+    fn parseComponent(
+        p: *Parser,
+        text: []const u8,
+        start: usize,
+        kind: Kind,
+        line: []const u8,
+        line_number: usize,
+    ) error{ InvalidComponent, OutOfMemory }!Parsed {
+        const name_start = start + 1;
+        const column = start + 1;
+
+        if (name_start < text.len and (text[name_start] == ' ' or text[name_start] == '\t')) {
+            try p.warn(line, line_number, column, switch (kind) {
+                .ingredient => "space after '@': read as text (write @name)",
+                .cookware => "space after '#': read as text (write #name)",
+                .timer => "space after '~': read as text (write ~name or ~{time})",
+            });
             return error.InvalidComponent;
         }
 
-        const content = text[brace_start .. index - 1]; // Exclude closing brace
-        const parsed = try parseComponentContent(content, allocator);
-        parsed_quantity = parsed.quantity;
-        units = parsed.units;
-    }
+        // A single word ends at whitespace or punctuation; a multi-word name
+        // runs to a `{` that comes before the next component symbol.
+        var word_end = name_start;
+        while (!helpers.isWordTerminator(text, word_end)) word_end += 1;
 
-    // Create component with proper defaults
-    var component = Component{
-        .type = component_type,
-        .name = name_result.name,
-        .quantity = parsed_quantity,
-        .units = units,
-        .value = null,
-    };
-
-    // Set default values based on component type if needed
-    if (component.quantity == null) {
-        switch (component_type) {
-            .ingredient => component.quantity = Quantity{ .text = try allocator.dupe(u8, "some") },
-            .cookware => component.quantity = Quantity{ .number = 1 },
-            .timer => {}, // timers can have null quantity
-            .text => {},
+        var name_end = word_end;
+        var brace: ?usize = null;
+        if (word_end < text.len and text[word_end] == '{') {
+            brace = word_end;
+        } else {
+            var scan = word_end;
+            while (scan < text.len and text[scan] != '{' and Kind.of(text[scan]) == null) scan += 1;
+            if (scan < text.len and text[scan] == '{') {
+                name_end = scan;
+                brace = scan;
+            }
         }
-    }
+        const name = std.mem.trim(u8, text[name_start..name_end], " \t");
 
-    if (component.units == null) {
-        switch (component_type) {
-            .ingredient, .timer => {
-                if (component.quantity != null) {
-                    component.units = try allocator.dupe(u8, "");
-                }
+        if (brace == null and name.len == 0) {
+            // A lone symbol, e.g. "5 # 3": common in prose, not worth a warning.
+            return error.InvalidComponent;
+        }
+
+        var end = name_end;
+        var amount: ?Quantity = null;
+        var units: ?[]const u8 = null;
+        if (brace) |open| {
+            const close = std.mem.indexOfScalarPos(u8, text, open + 1, '}') orelse {
+                try p.warn(line, line_number, open + 1, "'{' is never closed: read as text");
+                return error.InvalidComponent;
+            };
+            const content = std.mem.trim(u8, text[open + 1 .. close], " \t");
+            if (std.mem.indexOfScalar(u8, content, '%')) |percent| {
+                const amount_str = std.mem.trim(u8, content[0..percent], " \t");
+                const units_str = std.mem.trim(u8, content[percent + 1 ..], " \t");
+                if (amount_str.len > 0) amount = quantity.parseQuantity(amount_str);
+                if (units_str.len > 0) units = units_str;
+            } else if (content.len > 0) {
+                amount = quantity.parseQuantity(content);
+            }
+            end = close + 1;
+        }
+
+        const component: Component = switch (kind) {
+            .ingredient => .{ .ingredient = .{
+                .name = name,
+                .quantity = amount orelse .{ .text = "some" },
+                .units = units,
+            } },
+            .cookware => .{ .cookware = .{
+                .name = name,
+                .quantity = amount orelse .{ .number = 1 },
+            } },
+            .timer => .{ .timer = .{
+                .name = if (name.len > 0) name else null,
+                .quantity = amount,
+                .units = units,
+            } },
+        };
+        if (kind != .timer and name.len == 0) {
+            try p.warn(line, line_number, column, "component has no name: read as text");
+            return error.InvalidComponent;
+        }
+        return .{ .component = component, .end = end };
+    }
+};
+
+/// Appends text to a step, merging it into a preceding text component.
+fn appendText(arena: Allocator, step: *ArrayList(Component), text: []const u8) Allocator.Error!void {
+    if (step.items.len > 0) {
+        switch (step.items[step.items.len - 1]) {
+            .text => |*last| {
+                last.* = try std.mem.concat(arena, u8, &.{ last.*, text });
+                return;
             },
-            .cookware => {}, // cookware doesn't use units
-            .text => {},
+            else => {},
         }
     }
-
-    return .{ .component = component, .end_index = index };
+    try step.append(arena, .{ .text = text });
 }
 
-/// Remove comments from a line
-fn removeComments(line: []const u8, allocator: Allocator) ![]const u8 {
-    var result = ArrayList(u8){};
+/// `-- comment` but not `---`: a run of three or more dashes is text.
+fn isCommentAt(line: []const u8, i: usize) bool {
+    return i + 1 < line.len and line[i] == '-' and line[i + 1] == '-' and
+        !(i + 2 < line.len and line[i + 2] == '-') and
+        !(i > 0 and line[i - 1] == '-');
+}
 
+fn isCommentLine(trimmed: []const u8) bool {
+    return isCommentAt(trimmed, 0);
+}
+
+/// The line without `-- line comments` and `[- block comments -]`. A block
+/// comment left open drops the rest of the line.
+fn removeComments(arena: Allocator, line: []const u8) Allocator.Error![]const u8 {
+    if (std.mem.indexOf(u8, line, "--") == null and std.mem.indexOf(u8, line, "[-") == null) return line;
+
+    var out: ArrayList(u8) = .empty;
     var i: usize = 0;
     while (i < line.len) {
-        // Check for line comment
-        if (i + 1 < line.len and line[i] == '-' and line[i + 1] == '-') {
-            break; // Rest of line is comment
-        }
-
-        // Check for block comment
+        if (isCommentAt(line, i)) break;
         if (i + 1 < line.len and line[i] == '[' and line[i + 1] == '-') {
-            // Find end of block comment
-            var j = i + 2;
-            while (j + 1 < line.len) {
-                if (line[j] == '-' and line[j + 1] == ']') {
-                    i = j + 2;
-                    break;
-                }
-                j += 1;
-            }
-            if (j + 1 >= line.len) {
-                // Comment not closed on this line, skip rest
-                break;
-            }
-        } else {
-            try result.append(allocator, line[i]);
-            i += 1;
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
-}
-
-/// Add a component to a step, combining with previous text component if both are text
-fn addComponentToStep(step: *Step, component: Component, allocator: Allocator) !void {
-    if (component.type == .text and step.items.len > 0) {
-        const last_idx = step.items.len - 1;
-        if (step.items[last_idx].type == .text) {
-            // Combine with previous text component
-            const existing_text = step.items[last_idx].value.?;
-            const new_text = component.value.?;
-
-            // Create combined text
-            const combined_len = existing_text.len + new_text.len;
-            const combined_text = try allocator.alloc(u8, combined_len);
-            @memcpy(combined_text[0..existing_text.len], existing_text);
-            @memcpy(combined_text[existing_text.len..], new_text);
-
-            // Free old texts
-            allocator.free(existing_text);
-            allocator.free(new_text);
-
-            // Update the existing component
-            step.items[last_idx].value = combined_text;
-            return;
-        }
-    }
-
-    // No combination needed, just append
-    try step.append(allocator, component);
-}
-
-/// Parse a single line into components
-fn parseLine(line: []const u8, line_num: usize, allocator: Allocator) !ArrayList(Component) {
-    var step_components = ArrayList(Component){};
-    errdefer {
-        for (step_components.items) |*component| {
-            component.deinit(allocator);
-        }
-        step_components.deinit(allocator);
-    }
-
-    // Remove comments first
-    const clean_line = try removeComments(line, allocator);
-    defer allocator.free(clean_line);
-
-    var index: usize = 0;
-    var text_start: usize = 0;
-
-    while (index < clean_line.len) {
-        const ch = clean_line[index];
-
-        if (ch == '@' or ch == '#' or ch == '~') {
-            // Add any preceding text
-            if (index > text_start) {
-                const text_content = clean_line[text_start..index];
-                try step_components.append(allocator, Component.initText(try allocator.dupe(u8, text_content)));
-            }
-
-            // Determine component type
-            const component_type: ComponentType = switch (ch) {
-                '@' => .ingredient,
-                '#' => .cookware,
-                '~' => .timer,
-                else => unreachable,
-            };
-
-            // Try to parse component
-            if (parseComponent(clean_line, index, component_type, line_num, allocator)) |result| {
-                try step_components.append(allocator, result.component);
-                index = result.end_index;
-                text_start = index;
-            } else |_| {
-                // Invalid component, treat as text
-                index += 1;
-            }
-        } else {
-            index += 1;
-        }
-    }
-
-    // Add any remaining text
-    if (clean_line.len > text_start) {
-        const text_content = clean_line[text_start..];
-        if (text_content.len > 0) {
-            try step_components.append(allocator, Component.initText(try allocator.dupe(u8, text_content)));
-        }
-    }
-
-    return step_components;
-}
-
-/// Parse a CookLang recipe from text
-///
-/// This is the main entry point for parsing CookLang recipes. It handles:
-/// - YAML front matter (metadata)
-/// - Ingredients: @ingredient{quantity%units}
-/// - Cookware: #cookware{quantity}
-/// - Timers: ~timer{quantity%units}
-/// - Comments: -- line comments and [- block comments -]
-/// - Step separation by empty lines
-///
-/// Parameters:
-///   - text: The CookLang recipe text to parse
-///   - allocator: Memory allocator for dynamic allocations
-///
-/// Returns: A Recipe struct containing parsed steps and metadata
-///
-/// Errors:
-///   - InvalidYamlFrontMatter: If YAML front matter is malformed
-///   - InvalidComponent: If ingredient/cookware/timer syntax is invalid
-///   - OutOfMemory: If allocation fails
-///
-/// Example:
-/// ```zig
-/// var recipe = try cooklang.parseRecipe("Add @salt{1%tsp}.", allocator);
-/// defer recipe.deinit();
-/// ```
-pub fn parseRecipe(text: []const u8, allocator: Allocator) !Recipe {
-    var recipe = Recipe.init(allocator);
-    errdefer recipe.deinit();
-
-    // Parse YAML front matter
-    const yaml_result = try yaml.parseYamlFrontMatter(text, allocator);
-    recipe.metadata = yaml_result.metadata;
-
-    // Get content after front matter
-    const content = if (yaml_result.end_index < text.len) text[yaml_result.end_index..] else "";
-
-    // Split into lines and group into steps
-    var lines = std.mem.splitSequence(u8, content, "\n");
-    var current_step: ?*Step = null;
-    var line_number: usize = 1;
-
-    // Count lines in front matter for proper line numbering
-    if (yaml_result.end_index > 0 and yaml_result.end_index <= text.len) {
-        var fm_iter = std.mem.splitSequence(u8, text[0..yaml_result.end_index], "\n");
-        while (fm_iter.next()) |_| {
-            line_number += 1;
-        }
-    }
-
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-
-        // Skip comment-only lines
-        if (std.mem.startsWith(u8, trimmed, "--") or trimmed.len == 0) {
-            if (trimmed.len == 0 and current_step != null) {
-                // Empty line ends current step
-                current_step = null;
-            }
-            line_number += 1;
+            const close = std.mem.indexOfPos(u8, line, i + 2, "-]") orelse break;
+            i = close + 2;
             continue;
         }
-
-        // Start new step if needed
-        if (current_step == null) {
-            current_step = try recipe.addStep();
-        }
-
-        // Parse line into components
-        var line_components = try parseLine(line, line_number, allocator);
-        defer line_components.deinit(allocator);
-
-        // Add components to current step (transfer ownership)
-        for (line_components.items) |component| {
-            try addComponentToStep(current_step.?, component, allocator);
-        }
-
-        line_number += 1;
+        try out.append(arena, line[i]);
+        i += 1;
     }
-
-    return recipe;
+    return out.items;
 }
 
-test "basic parsing" {
-    const allocator = testing.allocator;
+const testing = std.testing;
 
-    const input = "Add @salt and @pepper{} to taste.";
-    var recipe = try parseRecipe(input, allocator);
-    defer recipe.deinit();
-
-    try testing.expectEqual(@as(usize, 1), recipe.steps.items.len);
-
-    try testing.expectEqual(@as(usize, 5), recipe.steps.items[0].items.len);
-
-    try testing.expectEqual(ComponentType.text, recipe.steps.items[0].items[0].type);
-    try testing.expectEqualStrings("Add ", recipe.steps.items[0].items[0].value.?);
-
-    try testing.expectEqual(ComponentType.ingredient, recipe.steps.items[0].items[1].type);
-    try testing.expectEqualStrings("salt", recipe.steps.items[0].items[1].name.?);
-
-    try testing.expectEqual(ComponentType.text, recipe.steps.items[0].items[2].type);
-    try testing.expectEqualStrings(" and ", recipe.steps.items[0].items[2].value.?);
-
-    try testing.expectEqual(ComponentType.ingredient, recipe.steps.items[0].items[3].type);
-    try testing.expectEqualStrings("pepper", recipe.steps.items[0].items[3].name.?);
-
-    try testing.expectEqual(ComponentType.text, recipe.steps.items[0].items[4].type);
-    try testing.expectEqualStrings(" to taste.", recipe.steps.items[0].items[4].value.?);
+fn expectStrings(expected: []const []const u8, actual: []const []const u8) !void {
+    try testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |e, a| try testing.expectEqualStrings(e, a);
 }
 
-// Include canonical tests from the specification
-test "testBasicDirection" {
-    const allocator = testing.allocator;
-    const source = "Add a bit of chilli";
-
-    var recipe = try parseRecipe(source, allocator);
-    defer recipe.deinit();
-
-    try testing.expectEqual(@as(usize, 1), recipe.steps.items.len);
-    try testing.expectEqual(@as(usize, 1), recipe.steps.items[0].items.len);
-    try testing.expectEqual(ComponentType.text, recipe.steps.items[0].items[0].type);
-    try testing.expectEqualStrings("Add a bit of chilli", recipe.steps.items[0].items[0].value.?);
+fn expectText(expected: []const u8, component: Component) !void {
+    try testing.expectEqualStrings(expected, component.text);
 }
 
-test "testComments" {
-    const allocator = testing.allocator;
-    const source = "-- testing comments";
-
-    var recipe = try parseRecipe(source, allocator);
+test "ingredients, cookware and timers" {
+    var recipe = try parse(testing.allocator, "Add @salt and @ground pepper{1%tsp} to a #pot, ~{5%min}.", null);
     defer recipe.deinit();
 
-    try testing.expectEqual(@as(usize, 0), recipe.steps.items.len);
+    try testing.expectEqual(1, recipe.steps.len);
+    const c = recipe.steps[0].components;
+    try testing.expectEqual(9, c.len);
+    try expectText("Add ", c[0]);
+    try testing.expectEqualStrings("salt", c[1].ingredient.name);
+    try testing.expectEqualStrings("some", c[1].ingredient.quantity.text);
+    try testing.expectEqual(null, c[1].ingredient.units);
+    try expectText(" and ", c[2]);
+    try testing.expectEqualStrings("ground pepper", c[3].ingredient.name);
+    try testing.expectEqual(1, c[3].ingredient.quantity.number);
+    try testing.expectEqualStrings("tsp", c[3].ingredient.units.?);
+    try testing.expectEqualStrings("pot", c[5].cookware.name);
+    try testing.expectEqual(1, c[5].cookware.quantity.number);
+    try testing.expectEqual(null, c[7].timer.name);
+    try testing.expectEqual(5, c[7].timer.quantity.?.number);
+    try testing.expectEqualStrings("min", c[7].timer.units.?);
+    try expectText(".", c[8]);
+    try testing.expectEqual(0, recipe.warnings.len);
 }
 
-test "testDirectionWithIngredient" {
-    const allocator = testing.allocator;
-    const source = "Add @chilli{3%items}, @ginger{10%g} and @milk{1%l}.";
-
-    var recipe = try parseRecipe(source, allocator);
+test "paragraphs are steps; their lines join with a space" {
+    var recipe = try parse(testing.allocator, "Add salt\nand pepper.\r\n\n\nServe.\n", null);
     defer recipe.deinit();
-
-    try testing.expectEqual(@as(usize, 1), recipe.steps.items.len);
-    try testing.expectEqual(@as(usize, 7), recipe.steps.items[0].items.len);
-
-    try testing.expectEqual(ComponentType.text, recipe.steps.items[0].items[0].type);
-    try testing.expectEqualStrings("Add ", recipe.steps.items[0].items[0].value.?);
-
-    try testing.expectEqual(ComponentType.ingredient, recipe.steps.items[0].items[1].type);
-    try testing.expectEqualStrings("chilli", recipe.steps.items[0].items[1].name.?);
-    try testing.expectEqual(@as(f64, 3), recipe.steps.items[0].items[1].quantity.?.number);
-    try testing.expectEqualStrings("items", recipe.steps.items[0].items[1].units.?);
-
-    try testing.expectEqual(ComponentType.text, recipe.steps.items[0].items[2].type);
-    try testing.expectEqualStrings(", ", recipe.steps.items[0].items[2].value.?);
-
-    try testing.expectEqual(ComponentType.ingredient, recipe.steps.items[0].items[3].type);
-    try testing.expectEqualStrings("ginger", recipe.steps.items[0].items[3].name.?);
-    try testing.expectEqual(@as(f64, 10), recipe.steps.items[0].items[3].quantity.?.number);
-    try testing.expectEqualStrings("g", recipe.steps.items[0].items[3].units.?);
-
-    try testing.expectEqual(ComponentType.text, recipe.steps.items[0].items[4].type);
-    try testing.expectEqualStrings(" and ", recipe.steps.items[0].items[4].value.?);
-
-    try testing.expectEqual(ComponentType.ingredient, recipe.steps.items[0].items[5].type);
-    try testing.expectEqualStrings("milk", recipe.steps.items[0].items[5].name.?);
-    try testing.expectEqual(@as(f64, 1), recipe.steps.items[0].items[5].quantity.?.number);
-    try testing.expectEqualStrings("l", recipe.steps.items[0].items[5].units.?);
-
-    try testing.expectEqual(ComponentType.text, recipe.steps.items[0].items[6].type);
-    try testing.expectEqualStrings(".", recipe.steps.items[0].items[6].value.?);
+    try testing.expectEqual(2, recipe.steps.len);
+    try expectText("Add salt and pepper.", recipe.steps[0].components[0]);
+    try expectText("Serve.", recipe.steps[1].components[0]);
 }
 
-test "testFractions" {
-    const allocator = testing.allocator;
-    const source = "@milk{1/2%cup}";
-
-    var recipe = try parseRecipe(source, allocator);
+test "comments" {
+    var recipe = try parse(testing.allocator, "-- a note\nMix [- gently -]well -- or not\n--- stays", null);
     defer recipe.deinit();
-
-    try testing.expectEqual(@as(usize, 1), recipe.steps.items.len);
-    try testing.expectEqual(@as(usize, 1), recipe.steps.items[0].items.len);
-
-    try testing.expectEqual(ComponentType.ingredient, recipe.steps.items[0].items[0].type);
-    try testing.expectEqualStrings("milk", recipe.steps.items[0].items[0].name.?);
-    try testing.expectEqual(@as(f64, 0.5), recipe.steps.items[0].items[0].quantity.?.number);
-    try testing.expectEqualStrings("cup", recipe.steps.items[0].items[0].units.?);
+    try testing.expectEqual(1, recipe.steps.len);
+    try expectText("Mix well  --- stays", recipe.steps[0].components[0]);
 }
 
-test "testFractionsLike" {
-    const allocator = testing.allocator;
-    const source = "@milk{01/2%cup}";
-
-    var recipe = try parseRecipe(source, allocator);
+test "malformed components stay text, with warnings" {
+    var recipe = try parse(testing.allocator, "Email me @ home or @butter{2%tbsp", null);
     defer recipe.deinit();
-
-    try testing.expectEqual(@as(usize, 1), recipe.steps.items.len);
-    try testing.expectEqual(@as(usize, 1), recipe.steps.items[0].items.len);
-
-    try testing.expectEqual(ComponentType.ingredient, recipe.steps.items[0].items[0].type);
-    try testing.expectEqualStrings("milk", recipe.steps.items[0].items[0].name.?);
-    try testing.expectEqualStrings("01/2", recipe.steps.items[0].items[0].quantity.?.text);
-    try testing.expectEqualStrings("cup", recipe.steps.items[0].items[0].units.?);
+    try testing.expectEqual(1, recipe.steps[0].components.len);
+    try expectText("Email me @ home or @butter{2%tbsp", recipe.steps[0].components[0]);
+    try testing.expectEqual(2, recipe.warnings.len);
+    try testing.expectEqual(10, recipe.warnings[0].column);
+    try testing.expectEqual(27, recipe.warnings[1].column);
 }
 
-test "testEquipmentOneWord" {
-    const allocator = testing.allocator;
-    const source = "Simmer in #pan for some time";
-
-    var recipe = try parseRecipe(source, allocator);
+test "metadata keeps file order and line numbers count front matter" {
+    var recipe = try parse(testing.allocator, "---\nb: 2\na: 1\n---\nUse @ salt.", null);
     defer recipe.deinit();
-
-    try testing.expectEqual(@as(usize, 1), recipe.steps.items.len);
-    try testing.expectEqual(@as(usize, 3), recipe.steps.items[0].items.len);
-
-    try testing.expectEqual(ComponentType.text, recipe.steps.items[0].items[0].type);
-    try testing.expectEqualStrings("Simmer in ", recipe.steps.items[0].items[0].value.?);
-
-    try testing.expectEqual(ComponentType.cookware, recipe.steps.items[0].items[1].type);
-    try testing.expectEqualStrings("pan", recipe.steps.items[0].items[1].name.?);
-    try testing.expectEqual(@as(f64, 1), recipe.steps.items[0].items[1].quantity.?.number);
-
-    try testing.expectEqual(ComponentType.text, recipe.steps.items[0].items[2].type);
-    try testing.expectEqualStrings(" for some time", recipe.steps.items[0].items[2].value.?);
+    try expectStrings(&.{ "b", "a" }, recipe.metadata.keys());
+    try testing.expectEqual(5, recipe.warnings[0].line);
 }
 
-test "testTimerInteger" {
-    const allocator = testing.allocator;
-    const source = "Fry for ~{10%minutes}";
-
-    var recipe = try parseRecipe(source, allocator);
-    defer recipe.deinit();
-
-    try testing.expectEqual(@as(usize, 1), recipe.steps.items.len);
-    try testing.expectEqual(@as(usize, 2), recipe.steps.items[0].items.len);
-
-    try testing.expectEqual(ComponentType.text, recipe.steps.items[0].items[0].type);
-    try testing.expectEqualStrings("Fry for ", recipe.steps.items[0].items[0].value.?);
-
-    try testing.expectEqual(ComponentType.timer, recipe.steps.items[0].items[1].type);
-    try testing.expectEqualStrings("", recipe.steps.items[0].items[1].name.?);
-    try testing.expectEqual(@as(f64, 10), recipe.steps.items[0].items[1].quantity.?.number);
-    try testing.expectEqualStrings("minutes", recipe.steps.items[0].items[1].units.?);
+test "unclosed front matter fills the diagnostic" {
+    var diag: Diagnostic = .{};
+    try testing.expectError(error.InvalidFrontMatter, parse(testing.allocator, "---\ntitle: x\n", &diag));
+    try testing.expectEqual(1, diag.line);
+    try testing.expectEqualStrings("---", diag.source_line);
 }
 
-test "testMetadata" {
-    const allocator = testing.allocator;
-    const source = "---\nsourced: babooshka\n---";
-
-    var recipe = try parseRecipe(source, allocator);
+test "the recipe does not borrow the source" {
+    const source = try testing.allocator.dupe(u8, "---\ntitle: Soup\n---\nAdd @water{1%l}.");
+    var recipe = try parse(testing.allocator, source, null);
     defer recipe.deinit();
+    testing.allocator.free(source);
+    try testing.expectEqualStrings("Soup", recipe.metadata.get("title").?);
+    try testing.expectEqualStrings("water", recipe.steps[0].components[1].ingredient.name);
+}
 
-    try testing.expectEqual(@as(usize, 0), recipe.steps.items.len);
-    try testing.expect(recipe.metadata.contains("sourced"));
-    try testing.expectEqualStrings("babooshka", recipe.metadata.get("sourced").?);
+test "distinct ingredients and cookware" {
+    var recipe = try parse(testing.allocator, "@salt, @pepper and @salt{1%pinch} in a #pot.\n\nStir the #pot.", null);
+    defer recipe.deinit();
+    const ingredients = try recipe.ingredients(testing.allocator);
+    defer testing.allocator.free(ingredients);
+    const cookware = try recipe.cookware(testing.allocator);
+    defer testing.allocator.free(cookware);
+    try testing.expectEqual(2, ingredients.len);
+    try testing.expectEqualStrings("pepper", ingredients[1].name);
+    try testing.expectEqual(1, cookware.len);
+}
+
+test "parse does not leak on allocation failure" {
+    try testing.checkAllAllocationFailures(testing.allocator, struct {
+        fn run(gpa: Allocator) !void {
+            var recipe = try parse(gpa, "---\ntitle: x\n---\nAdd @salt{1%g} -- c\nand #pot.\n\n~{2%min}", null);
+            recipe.deinit();
+        }
+    }.run, .{});
+}
+
+test {
+    _ = helpers;
+    _ = quantity;
+    _ = yaml;
 }

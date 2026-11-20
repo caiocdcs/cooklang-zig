@@ -1,301 +1,114 @@
-//! YAML front matter parsing
-//! Handles minimal YAML parsing for CookLang recipe metadata
-//! Supports: basic key-value pairs, quoted strings, values with colons
+//! YAML front matter: the block between a `---` first line and the next
+//! `---` line. Only flat `key: value` pairs are read; values may be quoted,
+//! and unquoted values drop a trailing ` # comment`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const components = @import("components.zig");
-const Metadata = components.Metadata;
+const Metadata = @import("components.zig").Metadata;
 
-/// Parse YAML front matter from text
-/// Returns the parsed metadata and the index where front matter ends
-/// Returns end_index: 0 if no front matter is found
-const YamlResult = struct { metadata: Metadata, end_index: usize };
+const whitespace = " \t\r";
 
-/// Extract a quoted string value (handles both single and double quotes)
-/// Returns the unquoted value and the remaining text after the closing quote
-fn extractQuotedValue(text: []const u8) ?struct { value: []const u8, rest: []const u8 } {
-    if (text.len == 0) return null;
+pub const Error = error{ UnclosedFrontMatter, OutOfMemory };
 
-    const quote_char = text[0];
-    if (quote_char != '"' and quote_char != '\'') return null;
-
-    // Find closing quote (not escaped)
-    var i: usize = 1;
-    while (i < text.len) {
-        if (text[i] == quote_char and text[i - 1] != '\\') {
-            return .{
-                .value = text[1..i],
-                .rest = text[i + 1 ..],
-            };
-        }
-        i += 1;
-    }
-
-    // No closing quote found
-    return null;
-}
-
-/// Parse a key-value pair from a YAML line
-/// Handles: key: value, key: "quoted value", key: 'quoted value'
-fn parseYamlLine(line: []const u8, allocator: Allocator) !?struct { key: []const u8, value: []const u8 } {
-    const trimmed = std.mem.trim(u8, line, " \t\r");
-
-    // Skip empty lines and comments
-    if (trimmed.len == 0 or trimmed[0] == '#') return null;
-
-    // Find the first colon (key separator)
-    const colon_pos = std.mem.indexOf(u8, trimmed, ":") orelse return null;
-
-    const key = std.mem.trim(u8, trimmed[0..colon_pos], " \t");
-    if (key.len == 0) return null;
-
-    // Get the raw value part (everything after the colon)
-    var raw_value = trimmed[colon_pos + 1 ..];
-
-    // Trim leading whitespace from value
-    raw_value = std.mem.trimLeft(u8, raw_value, " \t");
-
-    // Handle quoted values
-    var final_value: []const u8 = undefined;
-    var value_needs_dup = true;
-
-    if (raw_value.len > 0 and (raw_value[0] == '"' or raw_value[0] == '\'')) {
-        if (extractQuotedValue(raw_value)) |quoted| {
-            final_value = quoted.value;
-            value_needs_dup = false; // extractQuotedValue returns a slice into raw_value
-        } else {
-            // Unmatched quote, treat as literal
-            final_value = raw_value;
-        }
-    } else {
-        // Unquoted value - trim trailing whitespace and comments
-        final_value = std.mem.trimRight(u8, raw_value, " \t");
-        // Remove inline comments (simple # comment handling)
-        if (std.mem.indexOf(u8, final_value, " #")) |comment_pos| {
-            final_value = std.mem.trimRight(u8, final_value[0..comment_pos], " \t");
-        }
-    }
-
-    // Skip if value is empty after processing
-    if (final_value.len == 0) return null;
-
-    const owned_key = try allocator.dupe(u8, key);
-    errdefer allocator.free(owned_key);
-
-    const owned_value = if (value_needs_dup)
-        try allocator.dupe(u8, final_value)
-    else
-        try allocator.dupe(u8, final_value);
-
-    return .{
-        .key = owned_key,
-        .value = owned_value,
-    };
-}
-
-pub fn parseYamlFrontMatter(text: []const u8, allocator: Allocator) !YamlResult {
-    var metadata = Metadata.init(allocator);
-
-    if (!std.mem.startsWith(u8, text, "---")) {
-        return YamlResult{ .metadata = metadata, .end_index = 0 };
-    }
-
-    // Find the end of front matter
-    var lines = std.mem.splitSequence(u8, text[3..], "\n");
-    var current_pos: usize = 3; // Start after initial "---"
-
-    // Skip the newline after initial "---"
-    if (current_pos < text.len and text[current_pos] == '\n') {
-        current_pos += 1;
-    }
+/// Reads the front matter of `text` into `metadata`, with keys and values as
+/// slices of `text`. Returns the index where the body starts: 0 without front
+/// matter, else just past the closing `---` line.
+pub fn parseFrontMatter(gpa: Allocator, text: []const u8, metadata: *Metadata) Error!usize {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    if (!std.mem.eql(u8, std.mem.trim(u8, lines.first(), whitespace), "---")) return 0;
 
     while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-
-        if (std.mem.eql(u8, trimmed, "---")) {
-            current_pos += line.len + 1; // Include the closing ---
-            return YamlResult{ .metadata = metadata, .end_index = current_pos };
+        if (std.mem.eql(u8, std.mem.trim(u8, line, whitespace), "---")) {
+            return lines.index orelse text.len;
         }
-
-        // Parse key: value pairs
-        if (try parseYamlLine(line, allocator)) |pair| {
-            try metadata.put(pair.key, pair.value);
-        }
-
-        current_pos += line.len + 1; // +1 for newline
+        if (parseLine(line)) |pair| try metadata.put(gpa, pair.key, pair.value);
     }
+    return error.UnclosedFrontMatter;
+}
 
-    // No closing ---, treat as invalid
-    var iterator = metadata.iterator();
-    while (iterator.next()) |entry| {
-        allocator.free(entry.key_ptr.*);
-        allocator.free(entry.value_ptr.*);
+const Pair = struct { key: []const u8, value: []const u8 };
+
+fn parseLine(line: []const u8) ?Pair {
+    const trimmed = std.mem.trim(u8, line, whitespace);
+    if (trimmed.len == 0 or trimmed[0] == '#') return null;
+
+    const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse return null;
+    const key = std.mem.trim(u8, trimmed[0..colon], whitespace);
+    const raw = std.mem.trimStart(u8, trimmed[colon + 1 ..], whitespace);
+    if (key.len == 0) return null;
+
+    const value = unquote(raw) orelse blk: {
+        const end = std.mem.indexOf(u8, raw, " #") orelse raw.len;
+        break :blk std.mem.trimEnd(u8, raw[0..end], whitespace);
+    };
+    if (value.len == 0) return null;
+    return .{ .key = key, .value = value };
+}
+
+/// The contents of a `"…"` or `'…'` value, or null if `raw` isn't quoted.
+fn unquote(raw: []const u8) ?[]const u8 {
+    if (raw.len < 2 or (raw[0] != '"' and raw[0] != '\'')) return null;
+    var i: usize = 1;
+    while (i < raw.len) : (i += 1) {
+        if (raw[i] == raw[0] and raw[i - 1] != '\\') return raw[1..i];
     }
-    metadata.deinit();
-
-    return error.InvalidYamlFrontMatter;
+    return null;
 }
 
 const testing = std.testing;
 
-test "parseYamlFrontMatter no front matter" {
-    const allocator = testing.allocator;
-    const text = "Add @salt to taste.";
-
-    var result = try parseYamlFrontMatter(text, allocator);
-    defer result.metadata.deinit();
-
-    try testing.expectEqual(@as(usize, 0), result.end_index);
-    try testing.expectEqual(@as(usize, 0), result.metadata.count());
+fn parseForTest(text: []const u8, metadata: *Metadata) Error!usize {
+    return parseFrontMatter(testing.allocator, text, metadata);
 }
 
-test "parseYamlFrontMatter basic" {
-    const allocator = testing.allocator;
+test "no front matter" {
+    var metadata: Metadata = .empty;
+    defer metadata.deinit(testing.allocator);
+    try testing.expectEqual(0, try parseForTest("Add @salt to taste.", &metadata));
+    try testing.expectEqual(0, try parseForTest("--- not front matter\n", &metadata));
+    try testing.expectEqual(0, metadata.count());
+}
+
+test "pairs in order, body index" {
+    var metadata: Metadata = .empty;
+    defer metadata.deinit(testing.allocator);
     const text = "---\ntitle: Test Recipe\nservings: 4\n---\nAdd @salt.";
-
-    var result = try parseYamlFrontMatter(text, allocator);
-    defer {
-        var iter = result.metadata.iterator();
-        while (iter.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
-        }
-        result.metadata.deinit();
-    }
-
-    try testing.expect(result.end_index > 0);
-    try testing.expectEqual(@as(usize, 2), result.metadata.count());
-    try testing.expectEqualStrings("Test Recipe", result.metadata.get("title").?);
-    try testing.expectEqualStrings("4", result.metadata.get("servings").?);
+    const body = try parseForTest(text, &metadata);
+    try testing.expectEqualStrings("Add @salt.", text[body..]);
+    try testing.expectEqual(2, metadata.count());
+    try testing.expectEqualStrings("title", metadata.keys()[0]);
+    try testing.expectEqualStrings("servings", metadata.keys()[1]);
+    try testing.expectEqualStrings("Test Recipe", metadata.get("title").?);
 }
 
-test "parseYamlFrontMatter invalid no closing" {
-    const allocator = testing.allocator;
-    const text = "---\ntitle: Test\nAdd @salt.";
-
-    const result = parseYamlFrontMatter(text, allocator);
-    try testing.expectError(error.InvalidYamlFrontMatter, result);
+test "closing line at end of input" {
+    var metadata: Metadata = .empty;
+    defer metadata.deinit(testing.allocator);
+    const text = "---\nsourced: babooshka\n---";
+    try testing.expectEqual(text.len, try parseForTest(text, &metadata));
 }
 
-test "parseYamlFrontMatter double quoted values" {
-    const allocator = testing.allocator;
-    const text = "---\ntitle: \"My Recipe\"\ndescription: \"A tasty dish\"\n---\nAdd @salt.";
-
-    var result = try parseYamlFrontMatter(text, allocator);
-    defer {
-        var iter = result.metadata.iterator();
-        while (iter.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
-        }
-        result.metadata.deinit();
-    }
-
-    try testing.expectEqual(@as(usize, 2), result.metadata.count());
-    try testing.expectEqualStrings("My Recipe", result.metadata.get("title").?);
-    try testing.expectEqualStrings("A tasty dish", result.metadata.get("description").?);
+test "quotes, colons and comments" {
+    var metadata: Metadata = .empty;
+    defer metadata.deinit(testing.allocator);
+    _ = try parseForTest(
+        \\---
+        \\title: "Pasta: the classic"
+        \\source: 'grandma'
+        \\time: 10 min # roughly
+        \\url: https://example.com/a
+        \\cooking time    :30 mins
+        \\---
+    , &metadata);
+    try testing.expectEqualStrings("Pasta: the classic", metadata.get("title").?);
+    try testing.expectEqualStrings("grandma", metadata.get("source").?);
+    try testing.expectEqualStrings("10 min", metadata.get("time").?);
+    try testing.expectEqualStrings("https://example.com/a", metadata.get("url").?);
+    try testing.expectEqualStrings("30 mins", metadata.get("cooking time").?);
 }
 
-test "parseYamlFrontMatter single quoted values" {
-    const allocator = testing.allocator;
-    const text = "---\ntitle: 'My Recipe'\nauthor: 'Chef John'\n---\nAdd @salt.";
-
-    var result = try parseYamlFrontMatter(text, allocator);
-    defer {
-        var iter = result.metadata.iterator();
-        while (iter.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
-        }
-        result.metadata.deinit();
-    }
-
-    try testing.expectEqual(@as(usize, 2), result.metadata.count());
-    try testing.expectEqualStrings("My Recipe", result.metadata.get("title").?);
-    try testing.expectEqualStrings("Chef John", result.metadata.get("author").?);
-}
-
-test "parseYamlFrontMatter value with colons" {
-    const allocator = testing.allocator;
-    const text = "---\ntime: 10:30 AM\nurl: https://example.com:8080/path\n---\nAdd @salt.";
-
-    var result = try parseYamlFrontMatter(text, allocator);
-    defer {
-        var iter = result.metadata.iterator();
-        while (iter.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
-        }
-        result.metadata.deinit();
-    }
-
-    try testing.expectEqual(@as(usize, 2), result.metadata.count());
-    try testing.expectEqualStrings("10:30 AM", result.metadata.get("time").?);
-    try testing.expectEqualStrings("https://example.com:8080/path", result.metadata.get("url").?);
-}
-
-test "parseYamlFrontMatter empty values" {
-    const allocator = testing.allocator;
-    const text = "---\ntitle: Recipe\nnotes: \nauthor: Chef\n---\nAdd @salt.";
-
-    var result = try parseYamlFrontMatter(text, allocator);
-    defer {
-        var iter = result.metadata.iterator();
-        while (iter.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
-        }
-        result.metadata.deinit();
-    }
-
-    // Empty values should not be stored
-    try testing.expectEqual(@as(usize, 2), result.metadata.count());
-    try testing.expectEqualStrings("Recipe", result.metadata.get("title").?);
-    try testing.expectEqualStrings("Chef", result.metadata.get("author").?);
-    try testing.expect(result.metadata.get("notes") == null);
-}
-
-test "parseYamlFrontMatter with comments" {
-    const allocator = testing.allocator;
-    const text = "---\ntitle: Recipe # This is a comment\nauthor: Chef\n---\nAdd @salt.";
-
-    var result = try parseYamlFrontMatter(text, allocator);
-    defer {
-        var iter = result.metadata.iterator();
-        while (iter.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
-        }
-        result.metadata.deinit();
-    }
-
-    try testing.expectEqual(@as(usize, 2), result.metadata.count());
-    // Comment should be stripped from value
-    try testing.expectEqualStrings("Recipe", result.metadata.get("title").?);
-    try testing.expectEqualStrings("Chef", result.metadata.get("author").?);
-}
-
-test "extractQuotedValue double quotes" {
-    const text = "\"hello world\" remaining";
-    const result = extractQuotedValue(text).?;
-    try testing.expectEqualStrings("hello world", result.value);
-    try testing.expectEqualStrings(" remaining", result.rest);
-}
-
-test "extractQuotedValue single quotes" {
-    const text = "'hello world' remaining";
-    const result = extractQuotedValue(text).?;
-    try testing.expectEqualStrings("hello world", result.value);
-    try testing.expectEqualStrings(" remaining", result.rest);
-}
-
-test "extractQuotedValue no quotes" {
-    const text = "hello world";
-    try testing.expect(extractQuotedValue(text) == null);
-}
-
-test "extractQuotedValue unmatched quote" {
-    const text = "\"hello world";
-    try testing.expect(extractQuotedValue(text) == null);
+test "unclosed" {
+    var metadata: Metadata = .empty;
+    defer metadata.deinit(testing.allocator);
+    try testing.expectError(error.UnclosedFrontMatter, parseForTest("---\ntitle: x\n", &metadata));
 }
