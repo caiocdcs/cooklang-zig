@@ -40,6 +40,80 @@ fn timerName(t: cooklang.Timer) []const u8 {
     return t.name orelse "timer";
 }
 
+/// The name to show: a recipe reference shows as the recipe's name,
+/// `./sauces/Hollandaise` as `Hollandaise`.
+fn displayName(i: cooklang.Ingredient) []const u8 {
+    if (!i.isRecipeReference()) return i.name;
+    const slash = std.mem.lastIndexOfScalar(u8, i.name, '/').?;
+    return i.name[slash + 1 ..];
+}
+
+/// ", peeled and finely chopped", " (optional)" and " (recipe: ./path)" after
+/// an item in a list.
+fn extras(w: *Writer, ingredient: ?cooklang.Ingredient, optional: bool) Writer.Error!void {
+    if (ingredient) |i| if (i.note) |n| try w.print(", {s}", .{n});
+    if (optional) try w.writeAll(" (optional)");
+    if (ingredient) |i| if (i.isRecipeReference()) try w.print(" (recipe: {s})", .{i.name});
+}
+
+const Style = enum { human, markdown };
+
+/// Text with its `\` line breaks, indented to stay inside the list item.
+fn stepText(w: *Writer, text: []const u8, style: Style) Writer.Error!void {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    try w.writeAll(lines.first());
+    while (lines.next()) |line| {
+        try w.writeAll(if (style == .markdown) "  \n   " else "\n     ");
+        try w.writeAll(line);
+    }
+}
+
+/// Numbered steps across all sections, with section headings and notes.
+fn sections(w: *Writer, recipe: Recipe, style: Style) Writer.Error!void {
+    if (recipe.sections.len == 0) return;
+    try w.writeAll(if (style == .markdown) "## Steps\n" else "Steps:\n");
+    var n: usize = 1;
+    for (recipe.sections) |section| {
+        if (section.name) |name| switch (style) {
+            .human => try w.print("\n{s}:\n", .{name}),
+            .markdown => try w.print("\n### {s}\n", .{name}),
+        };
+        for (section.content, 0..) |content, i| switch (content) {
+            .note => |note| switch (style) {
+                .human => try w.print("  > {s}\n", .{note}),
+                .markdown => try w.print("\n> {s}\n", .{note}),
+            },
+            .step => |step| {
+                const after_note = i > 0 and section.content[i - 1] == .note;
+                switch (style) {
+                    .human => try w.print("  {d}. ", .{n}),
+                    .markdown => try w.print("{s}{d}. ", .{ if (i == 0 or after_note) "\n" else "", n }),
+                }
+                for (step.components) |c| try component(w, c, style);
+                try w.writeByte('\n');
+                n += 1;
+            },
+        };
+    }
+}
+
+fn component(w: *Writer, c: Component, style: Style) Writer.Error!void {
+    const strong = if (style == .markdown) "**" else "";
+    const em = if (style == .markdown) "*" else "";
+    switch (c) {
+        .text => |t| try stepText(w, t, style),
+        .ingredient => |i| {
+            try w.print("{s}{s}{s}", .{ strong, displayName(i), strong });
+            try amount(w, i.quantity, i.units);
+        },
+        .cookware => |k| try w.print("{s}{s}{s}", .{ em, k.name, em }),
+        .timer => |t| {
+            try w.print("{s}{s}{s}", .{ strong, timerName(t), strong });
+            try amount(w, t.quantity, t.units);
+        },
+    }
+}
+
 fn human(w: *Writer, recipe: Recipe, lists: Lists) Writer.Error!void {
     if (recipe.metadata.get("title")) |title| try w.print("{s}\n\n", .{title});
 
@@ -53,13 +127,14 @@ fn human(w: *Writer, recipe: Recipe, lists: Lists) Writer.Error!void {
 
     if (lists.ingredients.len > 0) {
         var width: usize = 0;
-        for (lists.ingredients) |i| width = @max(width, i.name.len);
+        for (lists.ingredients) |i| width = @max(width, displayName(i).len);
         try w.writeAll("Ingredients:\n");
         for (lists.ingredients) |i| {
-            try w.print("  {s}", .{i.name});
-            try w.splatByteAll(' ', width - i.name.len + 2);
+            try w.print("  {s}", .{displayName(i)});
+            try w.splatByteAll(' ', width - displayName(i).len + 2);
             try w.print("{f}", .{i.quantity});
             if (i.units) |u| try w.print(" {s}", .{u});
+            try extras(w, i, i.optional);
             try w.writeByte('\n');
         }
         try w.writeByte('\n');
@@ -67,27 +142,15 @@ fn human(w: *Writer, recipe: Recipe, lists: Lists) Writer.Error!void {
 
     if (lists.cookware.len > 0) {
         try w.writeAll("Cookware:\n");
-        for (lists.cookware) |c| try w.print("  {s}\n", .{c.name});
+        for (lists.cookware) |c| {
+            try w.print("  {s}", .{c.name});
+            try extras(w, null, c.optional);
+            try w.writeByte('\n');
+        }
         try w.writeByte('\n');
     }
 
-    if (recipe.steps.len > 0) try w.writeAll("Steps:\n");
-    for (recipe.steps, 1..) |step, n| {
-        try w.print("  {d}. ", .{n});
-        for (step.components) |c| switch (c) {
-            .text => |t| try w.writeAll(t),
-            .ingredient => |i| {
-                try w.writeAll(i.name);
-                try amount(w, i.quantity, i.units);
-            },
-            .cookware => |k| try w.writeAll(k.name),
-            .timer => |t| {
-                try w.writeAll(timerName(t));
-                try amount(w, t.quantity, t.units);
-            },
-        };
-        try w.writeByte('\n');
-    }
+    try sections(w, recipe, .human);
 }
 
 fn markdown(w: *Writer, recipe: Recipe, lists: Lists) Writer.Error!void {
@@ -104,8 +167,9 @@ fn markdown(w: *Writer, recipe: Recipe, lists: Lists) Writer.Error!void {
     if (lists.ingredients.len > 0) {
         try w.writeAll("## Ingredients\n\n");
         for (lists.ingredients) |i| {
-            try w.print("- {s}", .{i.name});
+            try w.print("- {s}", .{displayName(i)});
             try amount(w, i.quantity, i.units);
+            try extras(w, i, i.optional);
             try w.writeByte('\n');
         }
         try w.writeByte('\n');
@@ -113,31 +177,21 @@ fn markdown(w: *Writer, recipe: Recipe, lists: Lists) Writer.Error!void {
 
     if (lists.cookware.len > 0) {
         try w.writeAll("## Cookware\n\n");
-        for (lists.cookware) |c| try w.print("- {s}\n", .{c.name});
+        for (lists.cookware) |c| {
+            try w.print("- {s}", .{c.name});
+            try extras(w, null, c.optional);
+            try w.writeByte('\n');
+        }
         try w.writeByte('\n');
     }
 
-    if (recipe.steps.len > 0) try w.writeAll("## Steps\n\n");
-    for (recipe.steps, 1..) |step, n| {
-        try w.print("{d}. ", .{n});
-        for (step.components) |c| switch (c) {
-            .text => |t| try w.writeAll(t),
-            .ingredient => |i| {
-                try w.print("**{s}**", .{i.name});
-                try amount(w, i.quantity, i.units);
-            },
-            .cookware => |k| try w.print("*{s}*", .{k.name}),
-            .timer => |t| {
-                try w.print("**{s}**", .{timerName(t)});
-                try amount(w, t.quantity, t.units);
-            },
-        };
-        try w.writeByte('\n');
-    }
+    try sections(w, recipe, .markdown);
 }
 
-/// `{ metadata, ingredients, cookware, steps }`. Steps are arrays of
-/// components shaped like the canonical tests: `{ "type": "ingredient", … }`.
+/// `{ metadata, ingredients, cookware, steps, sections }`. Steps are arrays
+/// of components shaped like the canonical tests: `{ "type": "ingredient", … }`.
+/// Sections hold `{ "type": "step", "components": […] }` and
+/// `{ "type": "note", "text": … }`.
 fn json(w: *Writer, recipe: Recipe, lists: Lists) Writer.Error!void {
     var jw: std.json.Stringify = .{
         .writer = w,
@@ -167,6 +221,39 @@ fn json(w: *Writer, recipe: Recipe, lists: Lists) Writer.Error!void {
     }
     try jw.endArray();
 
+    try jw.objectField("sections");
+    try jw.beginArray();
+    for (recipe.sections) |section| {
+        try jw.beginObject();
+        if (section.name) |name| {
+            try jw.objectField("name");
+            try jw.write(name);
+        }
+        try jw.objectField("content");
+        try jw.beginArray();
+        for (section.content) |content| {
+            try jw.beginObject();
+            try jw.objectField("type");
+            try jw.write(@tagName(content));
+            switch (content) {
+                .note => |note| {
+                    try jw.objectField("text");
+                    try jw.write(note);
+                },
+                .step => |step| {
+                    try jw.objectField("components");
+                    try jw.beginArray();
+                    for (step.components) |c| try jsonComponent(&jw, c);
+                    try jw.endArray();
+                },
+            }
+            try jw.endObject();
+        }
+        try jw.endArray();
+        try jw.endObject();
+    }
+    try jw.endArray();
+
     try jw.endObject();
     try w.writeByte('\n');
 }
@@ -182,7 +269,13 @@ fn jsonComponent(jw: *std.json.Stringify, c: Component) Writer.Error!void {
         },
         inline else => |payload| inline for (comptime std.meta.fieldNames(@TypeOf(payload))) |field| {
             const value = @field(payload, field);
-            if (@typeInfo(@TypeOf(value)) == .optional) {
+            if (@TypeOf(value) == bool) {
+                // Only `"optional": true`; false is the default.
+                if (value) {
+                    try jw.objectField(field);
+                    try jw.write(true);
+                }
+            } else if (@typeInfo(@TypeOf(value)) == .optional) {
                 if (value) |v| {
                     try jw.objectField(field);
                     try jw.write(v);
@@ -242,6 +335,59 @@ test "markdown" {
         \\1. Steep **tea** (1 bag) in a *mug* for **timer** (3 minutes).
         \\
     , out);
+}
+
+test "sections, notes and extras" {
+    const source =
+        \\> Prep first.
+        \\
+        \\= Sauce
+        \\Chop @onion{1}(finely) and @?chives.\
+        \\Stir in a #pot.
+        \\
+        \\Simmer.
+    ;
+    const md = try renderToString(source, .markdown);
+    defer testing.allocator.free(md);
+    try testing.expectEqualStrings(
+        \\# Recipe
+        \\
+        \\## Ingredients
+        \\
+        \\- onion (1), finely
+        \\- chives (some) (optional)
+        \\
+        \\## Cookware
+        \\
+        \\- pot
+        \\
+        \\## Steps
+        \\
+        \\> Prep first.
+        \\
+        \\### Sauce
+        \\
+        \\1. Chop **onion** (1) and **chives** (some).  
+        \\   Stir in a *pot*.
+        \\2. Simmer.
+        \\
+    , md);
+
+    const human_out = try renderToString(source, .human);
+    defer testing.allocator.free(human_out);
+    try testing.expect(std.mem.indexOf(u8, human_out, "Sauce:\n  1. Chop onion (1) and chives (some).\n     Stir in a pot.\n  2. Simmer.\n") != null);
+    try testing.expect(std.mem.indexOf(u8, human_out, "  > Prep first.\n") != null);
+
+    const json_out = try renderToString(source, .json);
+    defer testing.allocator.free(json_out);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_out, .{});
+    defer parsed.deinit();
+    const secs = parsed.value.object.get("sections").?.array.items;
+    try testing.expectEqual(2, secs.len);
+    try testing.expectEqualStrings("note", secs[0].object.get("content").?.array.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("Sauce", secs[1].object.get("name").?.string);
+    const chives = secs[1].object.get("content").?.array.items[0].object.get("components").?.array.items[3].object;
+    try testing.expect(chives.get("optional").?.bool);
 }
 
 test "human" {

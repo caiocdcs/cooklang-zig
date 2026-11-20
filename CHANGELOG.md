@@ -17,6 +17,14 @@ First release.
 - `cooklang.parse(gpa, source, ?*Diagnostic)` returns an arena-backed `Recipe`
   with a tagged-union `Component`, ordered metadata, and `ingredients()` and
   `cookware()` helpers.
+- Spec syntax beyond the canonical suite:
+  - sections (`= Dough`, `== Filling ==`) and `> notes`, in
+    `Recipe.sections`;
+  - preparation notes (`@onion{1}(diced)`);
+  - optional ingredients and cookware (`@?chives`, `#?lid{}`);
+  - recipe references (`@./sauces/Hollandaise{}`);
+  - a trailing `\` for a line break inside a step.
+- A fuzz test for `parse` (`just fuzz`).
 - Warnings, with line and column, for malformed components that are read as
   text. Unclosed front matter is a `Diagnostic` error.
 - The `cooklang-zig` CLI, with human, JSON and Markdown output and `-` for

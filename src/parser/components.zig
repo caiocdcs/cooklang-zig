@@ -35,18 +35,28 @@ pub const Quantity = union(enum) {
     }
 };
 
-/// `@name{quantity%units}`. Without braces the quantity is `some`, as the
-/// spec says.
+/// `@name{quantity%units}(preparation)`. Without braces the quantity is
+/// `some`, as the spec says. `@?name` is optional.
 pub const Ingredient = struct {
     name: []const u8,
     quantity: Quantity = .{ .text = "some" },
     units: ?[]const u8 = null,
+    /// The preparation in parentheses: `@onion{1}(finely chopped)`.
+    note: ?[]const u8 = null,
+    optional: bool = false,
+
+    /// `@./sauces/Hollandaise{150%g}` refers to another recipe; the name is
+    /// its path from the recipes directory, without `.cook`.
+    pub fn isRecipeReference(self: Ingredient) bool {
+        return std.mem.startsWith(u8, self.name, "./");
+    }
 };
 
-/// `#name{quantity}`. Without a quantity there is one.
+/// `#name{quantity}`. Without a quantity there is one. `#?name` is optional.
 pub const Cookware = struct {
     name: []const u8,
     quantity: Quantity = .{ .number = 1 },
+    optional: bool = false,
 };
 
 /// `~name{quantity%units}`. The name is optional: `~{10%minutes}`.
@@ -67,6 +77,20 @@ pub const Component = union(enum) {
 /// A paragraph of the recipe. Lines within a paragraph are joined with a space.
 pub const Step = struct {
     components: []const Component,
+};
+
+/// What a section holds, in source order.
+pub const Content = union(enum) {
+    step: Step,
+    /// A `> note` paragraph: background, not a step.
+    note: []const u8,
+};
+
+/// `= Name` or `== Name ==` starts a section. Content before the first one
+/// is in a section without a name.
+pub const Section = struct {
+    name: ?[]const u8 = null,
+    content: []const Content = &.{},
 };
 
 /// Front matter key/value pairs, in file order.
@@ -98,7 +122,10 @@ pub const Diagnostic = struct {
 pub const Recipe = struct {
     arena: *std.heap.ArenaAllocator,
     metadata: Metadata = .empty,
+    /// Every step of every section, in order.
     steps: []const Step = &.{},
+    /// Steps and notes, grouped by section.
+    sections: []const Section = &.{},
     /// Syntax that looked like a component but was read as text, such as
     /// `@ salt` (space after the symbol) or an unclosed `{`.
     warnings: []const Diagnostic = &.{},

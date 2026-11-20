@@ -40,6 +40,10 @@ canonical *names:
 canonical-list:
     zig build canonical -- list
 
+# Fuzz the parser, e.g. `just fuzz 1M`
+fuzz runs="100K":
+    zig build test --fuzz={{runs}} --summary all
+
 # Regenerate the canonical JSON from the upstream YAML (cooklang/spec tests/canonical.yaml)
 canonical-json:
     yq -o=json '.' src/testing/canonical.yaml > src/testing/canonical.json

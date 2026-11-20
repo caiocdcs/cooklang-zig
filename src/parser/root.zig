@@ -27,6 +27,8 @@ pub const Cookware = components.Cookware;
 pub const Timer = components.Timer;
 pub const Component = components.Component;
 pub const Step = components.Step;
+pub const Content = components.Content;
+pub const Section = components.Section;
 pub const Metadata = components.Metadata;
 pub const Diagnostic = components.Diagnostic;
 pub const Recipe = components.Recipe;
@@ -73,6 +75,7 @@ pub fn parse(gpa: Allocator, source: []const u8, diag: ?*Diagnostic) Error!Recip
         .arena = arena,
         .metadata = metadata,
         .steps = try parser.steps.toOwnedSlice(parser.arena),
+        .sections = try parser.sections.toOwnedSlice(parser.arena),
         .warnings = try parser.warnings.toOwnedSlice(parser.arena),
     };
 }
@@ -102,8 +105,16 @@ const Parser = struct {
     arena: Allocator,
     steps: ArrayList(Step) = .empty,
     warnings: ArrayList(Diagnostic) = .empty,
-    /// The step being built, null between paragraphs.
+    sections: ArrayList(Section) = .empty,
+    /// The section being built: its name and its content so far.
+    section_name: ?[]const u8 = null,
+    content: ArrayList(Content) = .empty,
+    /// The paragraph being built, a step or a note; both null between paragraphs.
     step: ?ArrayList(Component) = null,
+    note: ?ArrayList(u8) = null,
+    /// What joins the next line of a step: a space, or a newline after a
+    /// line ending in `\`.
+    joiner: []const u8 = " ",
 
     fn parseBody(p: *Parser, body: []const u8, first_line_number: usize) Allocator.Error!void {
         var lines = std.mem.splitScalar(u8, body, '\n');
@@ -112,24 +123,70 @@ const Parser = struct {
             const line = std.mem.trimEnd(u8, raw_line, "\r");
             const trimmed = std.mem.trim(u8, line, " \t");
             if (trimmed.len == 0) {
+                try p.endParagraph();
+            } else if (isCommentLine(trimmed)) {
+                continue;
+            } else if (trimmed[0] == '=') {
+                try p.endParagraph();
+                try p.endSection();
+                const name = std.mem.trim(u8, trimmed, "= \t");
+                p.section_name = if (name.len > 0) name else null;
+            } else if (trimmed[0] == '>') {
                 try p.endStep();
-            } else if (!isCommentLine(trimmed)) {
+                const text = std.mem.trim(u8, try removeComments(p.arena, trimmed[1..]), " \t");
+                if (p.note) |*note| {
+                    if (note.items.len > 0 and text.len > 0) try note.append(p.arena, ' ');
+                } else p.note = .empty;
+                try p.note.?.appendSlice(p.arena, text);
+            } else {
+                try p.endNote();
                 if (p.step) |*step| {
                     // Lines of one paragraph join with a space.
-                    if (step.items.len > 0) try appendText(p.arena, step, " ");
+                    if (step.items.len > 0) try appendText(p.arena, step, p.joiner);
                 } else p.step = .empty;
-                try p.parseLine(line, line_number);
+                const end_trimmed = std.mem.trimEnd(u8, line, " \t");
+                const continued = std.mem.endsWith(u8, end_trimmed, "\\");
+                try p.parseLine(if (continued) end_trimmed[0 .. end_trimmed.len - 1] else line, line_number);
+                p.joiner = if (continued) "\n" else " ";
             }
         }
+        try p.endParagraph();
+        try p.endSection();
+    }
+
+    fn endParagraph(p: *Parser) Allocator.Error!void {
         try p.endStep();
+        try p.endNote();
     }
 
     fn endStep(p: *Parser) Allocator.Error!void {
+        p.joiner = " ";
         if (p.step) |*step| {
             // A paragraph of nothing but block comments is no step.
-            if (step.items.len > 0) try p.steps.append(p.arena, .{ .components = try step.toOwnedSlice(p.arena) });
+            if (step.items.len > 0) {
+                const done: Step = .{ .components = try step.toOwnedSlice(p.arena) };
+                try p.steps.append(p.arena, done);
+                try p.content.append(p.arena, .{ .step = done });
+            }
             p.step = null;
         }
+    }
+
+    fn endNote(p: *Parser) Allocator.Error!void {
+        if (p.note) |*note| {
+            if (note.items.len > 0) try p.content.append(p.arena, .{ .note = note.items });
+            p.note = null;
+        }
+    }
+
+    fn endSection(p: *Parser) Allocator.Error!void {
+        if (p.content.items.len > 0 or p.section_name != null) {
+            try p.sections.append(p.arena, .{
+                .name = p.section_name,
+                .content = try p.content.toOwnedSlice(p.arena),
+            });
+        }
+        p.section_name = null;
     }
 
     fn warn(p: *Parser, line: []const u8, line_number: usize, column: usize, message: []const u8) Allocator.Error!void {
@@ -181,8 +238,11 @@ const Parser = struct {
         line: []const u8,
         line_number: usize,
     ) error{ InvalidComponent, OutOfMemory }!Parsed {
-        const name_start = start + 1;
+        var name_start = start + 1;
         const column = start + 1;
+        // `@?chives`, `#?splatter guard{}`: optional.
+        const optional = kind != .timer and name_start < text.len and text[name_start] == '?';
+        if (optional) name_start += 1;
 
         if (name_start < text.len and (text[name_start] == ' ' or text[name_start] == '\t')) {
             try p.warn(line, line_number, column, switch (kind) {
@@ -237,15 +297,28 @@ const Parser = struct {
             end = close + 1;
         }
 
+        // `@onion{1}(peeled and finely chopped)`: a preparation note.
+        var note: ?[]const u8 = null;
+        if (kind == .ingredient and brace != null and end < text.len and text[end] == '(') {
+            if (std.mem.indexOfScalarPos(u8, text, end + 1, ')')) |close| {
+                const inner = std.mem.trim(u8, text[end + 1 .. close], " \t");
+                if (inner.len > 0) note = inner;
+                end = close + 1;
+            }
+        }
+
         const component: Component = switch (kind) {
             .ingredient => .{ .ingredient = .{
                 .name = name,
                 .quantity = amount orelse .{ .text = "some" },
                 .units = units,
+                .note = note,
+                .optional = optional,
             } },
             .cookware => .{ .cookware = .{
                 .name = name,
                 .quantity = amount orelse .{ .number = 1 },
+                .optional = optional,
             } },
             .timer => .{ .timer = .{
                 .name = if (name.len > 0) name else null,
@@ -399,6 +472,87 @@ test "distinct ingredients and cookware" {
     try testing.expectEqual(2, ingredients.len);
     try testing.expectEqualStrings("pepper", ingredients[1].name);
     try testing.expectEqual(1, cookware.len);
+}
+
+test "sections and notes" {
+    var recipe = try parse(testing.allocator,
+        \\> Don't burn the roux!
+        \\
+        \\Preheat the oven.
+        \\
+        \\= Dough
+        \\Mix @flour{200%g}.
+        \\
+        \\== Filling ==
+        \\> Any cheese works,
+        \\> really.
+        \\Add @cheese.
+        \\
+        \\=
+        \\Bake.
+    , null);
+    defer recipe.deinit();
+
+    try testing.expectEqual(4, recipe.steps.len);
+    try testing.expectEqual(4, recipe.sections.len);
+    const intro = recipe.sections[0];
+    try testing.expectEqual(null, intro.name);
+    try testing.expectEqualStrings("Don't burn the roux!", intro.content[0].note);
+    try expectText("Preheat the oven.", intro.content[1].step.components[0]);
+    try testing.expectEqualStrings("Dough", recipe.sections[1].name.?);
+    const filling = recipe.sections[2];
+    try testing.expectEqualStrings("Filling", filling.name.?);
+    try testing.expectEqualStrings("Any cheese works, really.", filling.content[0].note);
+    try testing.expectEqualStrings("cheese", filling.content[1].step.components[1].ingredient.name);
+    try testing.expectEqual(null, recipe.sections[3].name);
+}
+
+test "preparation notes, optional items and recipe references" {
+    var recipe = try parse(testing.allocator, "Mix @onion{1}(peeled and finely chopped), @?chives and @./sauces/Hollandaise{150%g} in a #?splatter guard{}. @? thyme", null);
+    defer recipe.deinit();
+    const c = recipe.steps[0].components;
+    try testing.expectEqualStrings("peeled and finely chopped", c[1].ingredient.note.?);
+    try testing.expect(!c[1].ingredient.optional);
+    try testing.expectEqualStrings("chives", c[3].ingredient.name);
+    try testing.expect(c[3].ingredient.optional);
+    try testing.expectEqualStrings("./sauces/Hollandaise", c[5].ingredient.name);
+    try testing.expect(c[5].ingredient.isRecipeReference());
+    try testing.expectEqualStrings("splatter guard", c[7].cookware.name);
+    try testing.expect(c[7].cookware.optional);
+    try expectText(". @? thyme", c[8]);
+}
+
+test "a trailing backslash breaks the line inside a step" {
+    var recipe = try parse(testing.allocator, "Lay out the @rice paper{1}.\\\nAdd the filling.\nRoll it up.", null);
+    defer recipe.deinit();
+    try testing.expectEqual(1, recipe.steps.len);
+    try expectText(".\nAdd the filling. Roll it up.", recipe.steps[0].components[2]);
+}
+
+fn fuzzParse(_: void, smith: *std.testing.Smith) anyerror!void {
+    var buffer: [512]u8 = undefined;
+    const source = buffer[0..smith.slice(&buffer)];
+    var diag: Diagnostic = .{};
+    var recipe = parse(testing.allocator, source, &diag) catch |err| switch (err) {
+        error.InvalidFrontMatter => return,
+        error.OutOfMemory => return err,
+    };
+    defer recipe.deinit();
+    for (recipe.warnings) |w| {
+        try testing.expect(w.line >= 1 and w.column >= 1);
+    }
+    var steps: usize = 0;
+    for (recipe.sections) |section| {
+        for (section.content) |content| steps += @intFromBool(content == .step);
+    }
+    try testing.expectEqual(recipe.steps.len, steps);
+}
+
+test "fuzz parse" {
+    try std.testing.fuzz({}, fuzzParse, .{ .corpus = &.{
+        "---\ntitle: x\n---\nAdd @salt{1%tsp} -- c\n\n= Dough\n> note\n#pot{2} ~{5%min} @?x{}(y)\\\nz",
+        "@ @{ #{} ~ [- -] -- \xf0\x9f",
+    } });
 }
 
 test "parse does not leak on allocation failure" {

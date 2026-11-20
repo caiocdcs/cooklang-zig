@@ -10,7 +10,11 @@ library and a command-line tool. It passes all 60 tests of the
 - Quantities as numbers, fractions (`1/2` → 0.5) or text (`few`)
 - YAML front matter, kept in file order
 - Line comments `--` and block comments `[- … -]`
-- Steps are paragraphs; lines within one are joined with a space
+- Steps are paragraphs; lines within one are joined with a space, and a
+  trailing `\` keeps the line break
+- Sections `= Dough` / `== Filling ==` and notes `> Don't burn the roux!`
+- Preparations `@onion{1}(finely chopped)`, optional items `@?chives` and
+  `#?splatter guard{}`, and recipe references `@./sauces/Hollandaise{150%g}`
 - Malformed components such as `@ salt` stay text, as the spec says, and come
   back as warnings with line and column
 
@@ -59,8 +63,9 @@ Steps:
   …
 ```
 
-`--format json` prints `{ metadata, ingredients, cookware, steps }`, with steps
-as arrays of components shaped like the canonical tests:
+`--format json` prints `{ metadata, ingredients, cookware, steps, sections }`.
+`steps` holds every step as an array of components shaped like the canonical
+tests, and `sections` holds the same steps grouped with their notes:
 
 ```json
 { "type": "ingredient", "name": "milk", "quantity": 2, "units": "tbsp" }
@@ -131,11 +136,13 @@ pub fn main(init: std.process.Init) !void {
 | API | |
 | --- | --- |
 | `parse(gpa, source, ?*Diagnostic) Error!Recipe` | Parse a recipe. The only error besides `OutOfMemory` is `InvalidFrontMatter`, and `diag` says where. |
-| `Recipe` | `metadata` (ordered `[]const u8` map), `steps: []const Step`, `warnings: []const Diagnostic`, `deinit()`, `ingredients(gpa)`, `cookware(gpa)` |
+| `Recipe` | `metadata` (ordered `[]const u8` map), `steps: []const Step` (all of them), `sections: []const Section`, `warnings: []const Diagnostic`, `deinit()`, `ingredients(gpa)`, `cookware(gpa)` |
+| `Section` | `name: ?[]const u8`, `content: []const Content` |
+| `Content` | `union(enum) { step: Step, note: []const u8 }` |
 | `Step` | `components: []const Component` |
 | `Component` | `union(enum) { text, ingredient, cookware, timer }` |
-| `Ingredient` | `name`, `quantity: Quantity` (default `some`), `units: ?[]const u8` |
-| `Cookware` | `name`, `quantity: Quantity` (default 1) |
+| `Ingredient` | `name`, `quantity: Quantity` (default `some`), `units: ?[]const u8`, `note: ?[]const u8`, `optional: bool`, `isRecipeReference()` |
+| `Cookware` | `name`, `quantity: Quantity` (default 1), `optional: bool` |
 | `Timer` | `name: ?[]const u8`, `quantity: ?Quantity`, `units: ?[]const u8` |
 | `Quantity` | `union(enum) { number: f64, text: []const u8 }`, formats with `{f}` |
 | `Diagnostic` | `line`, `column` (1-based), `message`, `source_line`, formats with `{f}` |
@@ -150,6 +157,7 @@ direnv allow     # or: nix develop
 just             # list recipes
 just check       # zig fmt, unit tests and the canonical suite
 just canonical   # the canonical suite with a line per test
+just fuzz        # fuzz the parser (100K runs by default)
 just ci          # what CI runs: nix flake check
 ```
 
