@@ -1,0 +1,44 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigestsToSemver"
+  ],
+  "enabledManagers": [
+    "nix",
+    "github-actions"
+  ],
+  "pinDigests": true,
+  "nix": {
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "minimumReleaseAge": "3 days",
+  "minimumReleaseAgeBehaviour": "timestamp-optional",
+  "gitAuthor": "Caio Silva <caio@cdcs.dev>",
+  "labels": [
+    "renovate"
+  ],
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 0,
+  "dependencyDashboardApproval": true,
+  "rebaseWhen": "conflicted",
+  "packageRules": [
+    {
+      "description": "Every update waits for approval on the Dependency Dashboard and review",
+      "matchManagers": [
+        "nix",
+        "github-actions"
+      ],
+      "automerge": false
+    },
+    {
+      "groupName": "forgejo actions",
+      "matchManagers": [
+        "github-actions"
+      ]
+    }
+  ]
+}

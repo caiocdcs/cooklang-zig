@@ -1,104 +1,97 @@
-# Default recipe - show available commands
+# cooklang-zig task runner — `just` lists recipes.
+# Inside `nix develop` (or direnv) every tool used here is on PATH.
+
 default:
     @just --list
 
-# Build the project (debug mode)
+# Debug build into zig-out/
 build:
     zig build
 
-# Build with optimizations (release-fast)
-build-fast:
-    zig build -Doptimize=ReleaseFast
+# Run the CLI, e.g. `just run recipes/guacamole.cook -f json`
+run *args:
+    zig build run -- {{args}}
 
-# Build with size optimizations (release-small)
-build-small:
-    zig build -Doptimize=ReleaseSmall
+# Parse a recipe: human, json or markdown
+parse file format="human":
+    zig build run -- {{file}} --format {{format}}
 
-# Build with safety optimizations (release-safe)
-build-safe:
-    zig build -Doptimize=ReleaseSafe
+# Re-run the tests on change
+watch:
+    watchexec --exts zig -- zig build test --summary all
 
-# Install globally
-install:
-    zig build install
-
-# Install with optimizations
-install-optimized:
-    zig build install -Doptimize=ReleaseFast
-
-# Run all tests
-test:
-    zig build test --summary all
-
-# Run all tests (unit + canonical)
-test-all:
-    zig build test --summary all
-    zig build run -- test
-
-# Run canonical tests (all tests)
-test-parser:
-    zig build run -- test
-
-# Run specific canonical test by name
-test-parser-single name:
-    zig build run -- test {{name}}
-
-# List all available canonical tests
-test-list:
-    zig build run -- list
-
-# Format all source code
+# Format all Zig code
 fmt:
-    zig fmt src/
+    zig fmt build.zig build.zig.zon src
 
 # Check formatting without changing files
 fmt-check:
-    zig fmt --check src/
+    zig fmt --check build.zig build.zig.zon src
 
-# Clean build artifacts
+# Run the test suite (unit tests and the canonical suite)
+test:
+    zig build test --summary all
+
+# Canonical tests with a line each; `just canonical testFractions` runs one
+canonical *names:
+    zig build canonical -- {{names}}
+
+# List the canonical tests
+canonical-list:
+    zig build canonical -- list
+
+# Regenerate the canonical JSON from the upstream YAML (cooklang/spec tests/canonical.yaml)
+canonical-json:
+    yq -o=json '.' src/testing/canonical.yaml > src/testing/canonical.json
+
+# Formatting + tests, before a commit
+check: fmt-check test
+
+# Everything CI checks, through Nix
+ci:
+    nix flake check --print-build-logs
+
+# Nix build; result in ./result
+nix-build:
+    nix build
+
+# Remove build artifacts
 clean:
-    rm -rf zig-cache zig-out .zig-cache
+    rm -rf .zig-cache zig-out result
 
-# Run demo
-demo:
-    zig build run -- demo
+# Bump the version, run CI checks, commit and tag. Add `## [X.Y.Z]` to CHANGELOG.md first.
+release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "$(git status --porcelain -- . ':!CHANGELOG.md')" ]; then
+        echo "error: commit or stash changes other than CHANGELOG.md first" >&2; exit 1
+    fi
+    if ! grep -q '^## \[{{version}}\]' CHANGELOG.md; then
+        echo "error: CHANGELOG.md has no '## [{{version}}]' section" >&2; exit 1
+    fi
+    sed -i.bak 's/^\( *\.version = \)"[^"]*"/\1"{{version}}"/' build.zig.zon && rm build.zig.zon.bak
+    git add --all
+    just ci
+    # Nothing to commit when the version was already set (a first release).
+    if ! git diff --cached --quiet; then
+        git commit --message "release: v{{version}}"
+    fi
+    git tag --annotate "v{{version}}" --message "v{{version}}"
+    echo "Tagged v{{version}}. Publish with: just push"
 
-# Parse a recipe file (human-readable output)
-parse file:
-    zig build run -- {{file}}
+# Push main and tags to every remote
+push:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for remote in $(git remote); do
+        git push "$remote" main --follow-tags
+    done
+    # A release tag on HEAD also goes out as a release on public mirrors.
+    tag=$(git tag --points-at HEAD --list 'v*' | sort -V | tail -1)
+    if [ -n "$tag" ]; then
+        scripts/release-public.sh "${tag#v}"
+    fi
 
-# Parse with JSON output
-parse-json file:
-    zig build run -- {{file}} --format json
-
-# Parse with markdown output
-parse-md file:
-    zig build run -- {{file}} --format markdown
-
-# Development build with fast incremental compilation
-dev:
-    zig build -Doptimize=Debug
-
-# Watch and rebuild on file changes (requires entr)
-watch:
-    find src -name "*.zig" | entr -c just build
-
-# Benchmark build (for performance testing)
-bench:
-    zig build -Doptimize=ReleaseFast -Dcpu=native
-
-# Create a release build with all optimizations
-release:
-    zig build -Doptimize=ReleaseFast -Dcpu=native -Dstrip=true
-
-# Check build without running
-check:
-    zig build --summary all
-
-# Profile build time
-profile-build:
-    @time zig build -Doptimize=ReleaseFast
-
-# Run all CI checks (format, build, test)
-ci: fmt-check check test-all
-    @echo "All CI checks passed"
+# Publish vX.Y.Z's CHANGELOG section as a release on GitHub/Codeberg mirrors
+release-public version:
+    scripts/release-public.sh {{version}}

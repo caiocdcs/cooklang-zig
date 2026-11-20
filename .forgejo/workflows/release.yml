@@ -1,0 +1,68 @@
+# `just release X.Y.Z` then `just push`: the tag publishes a release with its
+# CHANGELOG section as notes. No binaries: install with Nix.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+jobs:
+  release:
+    runs-on: nix
+    env:
+      NIX_CONFIG: experimental-features = nix-command flakes
+    steps:
+      # Full history (tags included) for the changelog compare link.
+      - name: checkout
+        env:
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: http.extraHeader
+          GIT_CONFIG_VALUE_0: "Authorization: token ${{ github.token }}"
+        run: |
+          git init -q .
+          git fetch -q --tags "$SERVER/$REPO.git"
+          git checkout -q "$GITHUB_REF_NAME"
+
+      - name: tag matches the flake version and CHANGELOG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          got=$(nix eval --raw .#default.version)
+          if [ "$version" != "$got" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the package version $got"
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$version]' section"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: release notes from CHANGELOG
+        run: |
+          awk -v v="$VERSION" '
+            /^## \[/ { p = (index($0, "## [" v "]") == 1); next }
+            /^\[[^]]+\]: / { p = 0 }
+            p
+          ' CHANGELOG.md > notes.md
+          prev=$(git tag --list 'v*' | sort -V | grep -B1 -x "v$VERSION" | head -1)
+          if [ -n "$prev" ] && [ "$prev" != "v$VERSION" ]; then
+            printf '\n**Full changelog:** %s/%s/compare/%s...v%s\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$prev" "$VERSION" >> notes.md
+          fi
+          cat notes.md
+
+      - name: create release
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          # jq and curl from the flake's nixpkgs; the host only promises nix and git.
+          nix shell --inputs-from . nixpkgs#jq nixpkgs#curl --command sh -euc '
+            jq -n --arg tag "$GITHUB_REF_NAME" --rawfile body notes.md \
+              "{tag_name: \$tag, name: \$tag, body: \$body}" > release.json
+            curl --fail-with-body -sS -o /dev/null -X POST \
+              -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
+              --data @release.json \
+              "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/releases"
+          '

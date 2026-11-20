@@ -1,93 +1,73 @@
 {
-  description = "CookLang Parser for Zig - A complete implementation of the CookLang specification";
+  description = "cooklang-zig: a CookLang recipe parser and CLI in Zig";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      nixpkgs,
+      flake-utils,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        zig = pkgs.zig_0_16 or pkgs.zig;  # Use zig 0.16+ or fallback
-      in
-      {
-        packages = {
-          default = pkgs.stdenv.mkDerivation {
-            pname = "cooklang-zig";
-            version = "0.1.0";
+        inherit (pkgs) lib zig;
 
-            src = ./.;
-
-            nativeBuildInputs = [ zig ];
-
-            buildPhase = ''
-              zig build -Doptimize=ReleaseFast
-            '';
-
-            installPhase = ''
-              mkdir -p $out/bin
-              cp zig-out/bin/cooklang_zig $out/bin/
-            '';
-
-            meta = with pkgs.lib; {
-              description = "CookLang parser implementation in Zig";
-              homepage = "https://github.com/caiocdcs/cooklang-zig";
-              license = licenses.mit;
-              platforms = platforms.all;
-              mainProgram = "cooklang_zig";
-            };
-          };
+        src = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.unions [
+            ./build.zig
+            ./build.zig.zon
+            ./src
+          ];
         };
 
-        devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            zig
-            just
-            entr  # For file watching
-          ];
+        # zig.hook builds with `zig build` (ReleaseSafe) and caches in $TMPDIR.
+        cooklang-zig = pkgs.stdenv.mkDerivation {
+          pname = "cooklang-zig";
+          version = lib.head (
+            builtins.match ''.*\.version = "([^"]+)".*'' (builtins.readFile ./build.zig.zon)
+          );
+          inherit src;
+          nativeBuildInputs = [ zig.hook ];
+          doCheck = true; # zig.hook's check phase runs `zig build test`
+          meta = {
+            description = "CookLang recipe parser and CLI";
+            homepage = "https://github.com/caiocdcs/cooklang-zig";
+            license = lib.licenses.mit;
+            mainProgram = "cooklang-zig";
+          };
+        };
+      in
+      {
+        packages.default = cooklang-zig;
 
-          shellHook = ''
-            echo "CookLang Zig Development Environment"
-            echo "==================================="
-            echo "Zig version: $(zig version)"
-            echo ""
-            echo "Available commands:"
-            echo "  just build      - Build the project"
-            echo "  just test       - Run unit tests"
-            echo "  just test-parser - Run canonical tests"
-            echo "  just demo       - Run demo"
-            echo "  just fmt        - Format code"
-            echo ""
-            echo "Type 'just' to see all available commands"
+        apps.default = flake-utils.lib.mkApp { drv = cooklang-zig; };
+
+        checks = {
+          inherit cooklang-zig;
+          fmt = pkgs.runCommand "cooklang-zig-fmt" { nativeBuildInputs = [ zig ]; } ''
+            zig fmt --check ${src}
+            touch $out
           '';
         };
 
-        apps.default = flake-utils.lib.mkApp {
-          drv = self.packages.${system}.default;
+        devShells.default = pkgs.mkShell {
+          packages = [
+            zig
+            pkgs.zls
+            pkgs.just
+            pkgs.watchexec
+            pkgs.yq-go # just canonical-json
+          ];
         };
 
-        checks = {
-          build = self.packages.${system}.default;
-
-          test = pkgs.stdenv.mkDerivation {
-            pname = "cooklang-zig-tests";
-            version = "0.1.0";
-
-            src = ./.;
-
-            nativeBuildInputs = [ zig ];
-
-            buildPhase = ''
-              zig build test --summary all
-            '';
-
-            installPhase = ''
-              mkdir -p $out
-              echo "Tests passed" > $out/test-results
-            '';
-          };
-        };
-      });
+        formatter = pkgs.nixfmt;
+      }
+    );
 }

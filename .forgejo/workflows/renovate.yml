@@ -1,0 +1,29 @@
+# Daily, as the bot account (BOT_TOKEN), with commits signed by CI_SIGNING_KEY:
+# the raw SSH private key registered on the bot's Forgejo account (Renovate
+# reads base64-encoded keys as GPG). Both secrets are set on the user account.
+# The bot must be a collaborator with write access on the repo. Updates wait
+# for approval on the Dependency Dashboard (renovate.json). The image is pinned
+# by digest; Renovate keeps it current.
+name: Renovate
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  renovate:
+    runs-on: alpine
+    container:
+      image: renovate/renovate:44.255.1@sha256:183a671d000c8f20f9dac8c3b1100677c1edb79a0b46bcf8798f1490c785d27c
+    steps:
+      - name: renovate
+        shell: sh
+        env:
+          RENOVATE_TOKEN: ${{ secrets.BOT_TOKEN }}
+          RENOVATE_PLATFORM: gitea
+          RENOVATE_ENDPOINT: ${{ github.server_url }}
+          RENOVATE_GIT_PRIVATE_KEY: ${{ secrets.CI_SIGNING_KEY }}
+          REPO: ${{ github.repository }}
+          LOG_LEVEL: debug
+        run: renovate "$REPO"

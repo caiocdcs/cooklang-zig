@@ -1,16 +1,12 @@
-# Zig build artifacts
-.zig-cache/
-zig-out/
+# Zig
+/.zig-cache
+/zig-out
 
-# Executables
-cooklang_zig
-cooklang_zig.exe
+# Nix / direnv
+/result
+/result-*
+/.direnv
 
-# Editor files
-.vscode/
-*.swp
-*~
-
-# System files
+# Local
+.env
 .DS_Store
-Thumbs.db

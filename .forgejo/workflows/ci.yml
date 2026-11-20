@@ -1,0 +1,37 @@
+# `just ci` (nix flake check, plus the audit where the language has one) on
+# the CI host's nix store (runner label `nix`), so builds are reused between
+# runs. The job clones with git.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: nix
+    env:
+      NIX_CONFIG: experimental-features = nix-command flakes
+    steps:
+      # Values come in through env, never interpolated into the script, and the
+      # token travels in GIT_CONFIG_* so it stays out of argv and .git/config.
+      - name: checkout
+        env:
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: http.extraHeader
+          GIT_CONFIG_VALUE_0: "Authorization: token ${{ github.token }}"
+        run: |
+          git init -q .
+          git fetch -q --depth 1 "$SERVER/$REPO.git" "$SHA"
+          git checkout -q FETCH_HEAD
+      - name: ci
+        run: nix develop --command just ci
